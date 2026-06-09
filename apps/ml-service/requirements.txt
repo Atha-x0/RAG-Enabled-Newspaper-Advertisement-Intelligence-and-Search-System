@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+qdrant-client
+google-generativeai
+pydantic
+python-dotenv
+requests
+pillow
+numpy
