@@ -1,8 +1,8 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'AdIntel-RAG | Newspaper Ad Intelligence & Search Engine',
-  description: 'AI-powered document layout analysis, multilingual OCR, structured extraction and hybrid vector semantic retrieval.',
+  title: 'Seetech ProcureIntel | Industrial Parts Ad Intelligence & Dealer Comparison Engine',
+  description: 'AI-powered procurement platform combining Google Shopping, IndiaMART, and newspaper ad intelligence for Seetech industrial parts comparison.',
 };
 
 export default function RootLayout({ children }) {

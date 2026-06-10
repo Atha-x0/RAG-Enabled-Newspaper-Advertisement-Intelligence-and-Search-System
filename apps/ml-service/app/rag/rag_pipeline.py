@@ -140,13 +140,30 @@ class AdIntelRagEngine:
             
             query_filter = Filter(must=filter_conditions) if filter_conditions else None
 
-            # Qdrant semantic/hybrid search routing
-            search_results = self.qdrant.search(
-                collection_name=COLLECTION_NAME,
-                query_vector=query_vector,
-                query_filter=query_filter,
-                limit=limit
-            )
+            # Qdrant semantic/hybrid search routing (Query API / search compatibility)
+            search_results = []
+            try:
+                # Try modern Qdrant Query API (v1.10.0+)
+                response = self.qdrant.query_points(
+                    collection_name=COLLECTION_NAME,
+                    query=query_vector,
+                    query_filter=query_filter,
+                    limit=limit
+                )
+                search_results = response.points
+            except Exception as query_err:
+                logger.debug(f"query_points failed, falling back to search method: {query_err}")
+                try:
+                    # Fallback to older search API
+                    search_results = self.qdrant.search(
+                        collection_name=COLLECTION_NAME,
+                        query_vector=query_vector,
+                        query_filter=query_filter,
+                        limit=limit
+                    )
+                except Exception as search_err:
+                    logger.error(f"Both query_points and search operations failed: {search_err}")
+                    raise search_err
 
             results = []
             for hit in search_results:
