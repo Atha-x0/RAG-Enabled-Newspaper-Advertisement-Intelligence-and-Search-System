@@ -3,7 +3,7 @@ import logging
 import threading
 from google import genai
 import chromadb
-from app.config import GEMINI_API_KEY, CHROMA_DB_PATH
+from app.config import GEMINI_API_KEY, CHROMA_DB_PATH, EMBEDDING_MODEL, EMBEDDING_DIMENSION
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ChromaService")
@@ -17,16 +17,16 @@ class ChromaService:
             os.makedirs(CHROMA_DB_PATH, exist_ok=True)
             logger.info(f"Initializing local persistent ChromaDB client at: {CHROMA_DB_PATH}")
             self.client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
-            self.collection = self.client.get_or_create_collection(name=CHROMA_COLLECTION)
         except Exception as e:
             logger.error(f"Failed to initialize ChromaDB PersistentClient: {e}. Falling back to EphemeralClient.")
             try:
                 self.client = chromadb.EphemeralClient()
-                self.collection = self.client.get_or_create_collection(name=CHROMA_COLLECTION)
             except Exception as ex:
                 logger.error(f"Failed to initialize EphemeralClient: {ex}. Running without vector storage.")
                 self.client = None
-                self.collection = None
+        
+        self.collection = None
+        self.dimension_verified = False
         
         # Setup Gemini genai client
         if GEMINI_API_KEY:
@@ -46,7 +46,7 @@ class ChromaService:
         # Lazy background loader setup for SentenceTransformer
         self._hf_model = None
         self._hf_loading_failed = False
-        self.embedding_dim = 384  # Default to bge-small-en-v1.5 dimension
+        self.embedding_dim = EMBEDDING_DIMENSION  # Default dimension from config
         self._lock = threading.Lock()
         
         # Start background thread to load model (non-blocking lazy load)
@@ -58,19 +58,175 @@ class ChromaService:
                 return
             try:
                 from sentence_transformers import SentenceTransformer
-                logger.info("SentenceTransformer: Loading BAAI/bge-small-en-v1.5 in background thread...")
-                # Load with local cache path or direct download
-                self._hf_model = SentenceTransformer('BAAI/bge-small-en-v1.5')
-                self.embedding_dim = 384
-                logger.info("INFO: Embedding model loaded")
+                logger.info(f"SentenceTransformer: Loading {EMBEDDING_MODEL} in background thread...")
+                self._hf_model = SentenceTransformer(EMBEDDING_MODEL)
+                self.embedding_dim = len(self._hf_model.encode("test"))
+                logger.info(f"INFO: Embedding model loaded (dimension: {self.embedding_dim})")
+                
+                # Reset verification flag and run collection dimension verification
+                self.dimension_verified = False
+                self.verify_collection_dimension()
             except Exception as e:
                 self._hf_loading_failed = True
                 logger.warning(
                     f"Embedding model unavailable: {e}. Startup will continue with mock/Gemini fallbacks."
                 )
+                self.dimension_verified = False
+                self.verify_collection_dimension()
+
+    def get_current_dimension(self) -> int:
+        if self._hf_model:
+            try:
+                test_emb = self._hf_model.encode("test")
+                return len(test_emb)
+            except Exception as e:
+                logger.error(f"Error checking dimension of local model: {e}")
+                
+        if self.has_gemini and self.genai_client:
+            return 768
+            
+        return EMBEDDING_DIMENSION
+
+    def create_collection_with_metadata(self, dimension: int):
+        if not self.client:
+            return
+        try:
+            try:
+                self.client.delete_collection(name=CHROMA_COLLECTION)
+            except Exception:
+                pass
+            self.collection = self.client.create_collection(
+                name=CHROMA_COLLECTION,
+                metadata={
+                    "embedding_dimension": dimension,
+                    "embedding_model": EMBEDDING_MODEL
+                }
+            )
+            logger.info(f"Created collection '{CHROMA_COLLECTION}' with dimension {dimension} and model {EMBEDDING_MODEL}")
+        except Exception as e:
+            logger.error(f"Failed to create collection with metadata: {e}")
+
+    def verify_collection_dimension(self) -> bool:
+        """
+        Verifies if the existing collection's dimension matches the current dimension.
+        If a mismatch is found, it deletes the collection, recreates it, and rebuilds the index.
+        Returns True if a rebuild was executed, False otherwise.
+        """
+        if self.dimension_verified:
+            return False
+            
+        if not self.client:
+            return False
+            
+        current_dim = self.get_current_dimension()
+        
+        try:
+            collection = self.client.get_collection(name=CHROMA_COLLECTION)
+            metadata = collection.metadata or {}
+            col_dim = metadata.get("embedding_dimension")
+            
+            if col_dim is None or col_dim != current_dim:
+                logger.warning("Embedding dimension mismatch detected. Rebuilding ChromaDB.")
+                print("Embedding dimension mismatch detected. Rebuilding ChromaDB.", flush=True)
+                
+                from app.database import SessionLocal
+                db = SessionLocal()
+                try:
+                    self.rebuild_embeddings(db)
+                finally:
+                    db.close()
+                return True
+            else:
+                self.collection = collection
+                self.dimension_verified = True
+                return False
+        except Exception as e:
+            logger.info(f"Collection '{CHROMA_COLLECTION}' not found or error: {e}. Creating new collection.")
+            self.create_collection_with_metadata(current_dim)
+            
+            from app.database import SessionLocal
+            db = SessionLocal()
+            try:
+                self.rebuild_embeddings(db)
+            finally:
+                db.close()
+            return True
+
+    def rebuild_embeddings(self, db):
+        """
+        Drops old collections, recreates collection with current dimension metadata,
+        and re-indexes all products, dealers, and advertisements.
+        """
+        logger.info("Rebuilding embeddings collection...")
+        current_dim = self.get_current_dimension()
+        self.create_collection_with_metadata(current_dim)
+        
+        if not self.collection:
+            logger.error("Cannot rebuild embeddings: Chroma collection is not initialized.")
+            return False
+            
+        # Re-index all Products
+        from app.models import Product
+        try:
+            products = db.query(Product).all()
+            logger.info(f"Re-indexing {len(products)} products in ChromaDB...")
+            for p in products:
+                composite_text = f"Product Name: {p.name} | Brand: {p.brand or ''} | Model: {p.model_number or ''} | Category: {p.category} | Description: {p.description or ''}"
+                metadata = {
+                    "type": "product",
+                    "name": p.name,
+                    "brand": p.brand or "Unknown",
+                    "category": p.category,
+                    "model_number": p.model_number or ""
+                }
+                self.index_product(p.id, composite_text, metadata)
+            logger.info("Products successfully re-indexed.")
+        except Exception as e:
+            logger.error(f"Failed to re-index products: {e}")
+            
+        # Re-index all Dealers
+        from app.models import Dealer
+        try:
+            dealers = db.query(Dealer).all()
+            logger.info(f"Re-indexing {len(dealers)} dealers in ChromaDB...")
+            for d in dealers:
+                composite_text = f"Dealer Name: {d.name} | Shop Name: {d.shop_name or ''} | Address: {d.address or ''} | City: {d.city or ''} | State: {d.state or ''} | Phone: {d.phone or ''} | Website: {d.website_url or ''}"
+                metadata = {
+                    "type": "dealer",
+                    "name": d.name,
+                    "city": d.city or "",
+                    "state": d.state or ""
+                }
+                self.index_product(d.id, composite_text, metadata)
+            logger.info("Dealers successfully re-indexed.")
+        except Exception as e:
+            logger.error(f"Failed to re-index dealers: {e}")
+            
+        # Re-index all Advertisements
+        from app.models import Advertisement
+        try:
+            ads = db.query(Advertisement).all()
+            logger.info(f"Re-indexing {len(ads)} advertisements in ChromaDB...")
+            for ad in ads:
+                composite_text = f"Ad Title: {ad.title or ''} | Company: {ad.company or ''} | Brand: {ad.brand or ''} | Category: {ad.category} | Location: {ad.location or ''} | Text: {ad.raw_text}"
+                metadata = {
+                    "type": "advertisement",
+                    "title": ad.title or "Untitled",
+                    "category": ad.category,
+                    "location": ad.location or "",
+                    "company": ad.company or ""
+                }
+                self.index_product(ad.id, composite_text, metadata)
+            logger.info("Advertisements successfully re-indexed.")
+        except Exception as e:
+            logger.error(f"Failed to re-index advertisements: {e}")
+            
+        logger.info("Rebuild embeddings complete.")
+        self.dimension_verified = True
+        return True
 
     def _get_embedding(self, text: str) -> list:
-        # 1. Try local SentenceTransformer (bge-small-en-v1.5)
+        # 1. Try local SentenceTransformer (bge-small-en-v1.5 / config model)
         if self._hf_model:
             try:
                 embedding = self._hf_model.encode(text)
@@ -92,11 +248,13 @@ class ChromaService:
             except Exception as e:
                 logger.error(f"Gemini API embedding generation failed: {e}")
                 
-        # 3. Fallback mock vector (All zeroes of size 384)
-        logger.warning(f"Using mock vector fallback [0.0] * {self.embedding_dim}")
-        return [0.0] * self.embedding_dim
+        # 3. Fallback mock vector (All zeroes of size matching current dimension)
+        dim = self.get_current_dimension()
+        logger.warning(f"Using mock vector fallback [0.0] * {dim}")
+        return [0.0] * dim
 
     def index_product(self, product_id: str, text: str, metadata: dict):
+        self.verify_collection_dimension()
         if not self.collection:
             logger.warning("Chroma collection is not initialized. Skipping index.")
             return False
@@ -127,6 +285,7 @@ class ChromaService:
             return False
 
     def search_products(self, query_text: str, brand: str = None, category: str = None, limit: int = 5) -> list:
+        self.verify_collection_dimension()
         if not self.collection:
             logger.warning("Chroma collection is not initialized. Returning empty search results.")
             return []

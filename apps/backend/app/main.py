@@ -379,9 +379,17 @@ def startup_event():
     print("INFO: ChromaDB initialized", flush=True)
     print("INFO: Embedding model loaded", flush=True)
     seed_mock_data()
+    
+    # Validate and potentially rebuild collections based on dimension match
+    try:
+        chroma_service.verify_collection_dimension()
+    except Exception as e:
+        logger.error(f"Failed to validate ChromaDB collection on startup: {e}")
+        
     print("INFO: Database seeded", flush=True)
     print("INFO: Application startup complete", flush=True)
     print("INFO: Uvicorn running on http://0.0.0.0:5000", flush=True)
+
 
 
 # --- API Endpoints ---
@@ -1038,6 +1046,15 @@ def legacy_similar_ads(ad_id: str, db: Session = Depends(get_db)):
                     "publication_date": "2026-06-09"
                 })
     return {"results": results[:3]}
+
+@app.post("/admin/rebuild-index")
+def rebuild_index_endpoint(db: Session = Depends(get_db)):
+    try:
+        chroma_service.rebuild_embeddings(db)
+        return {"status": "SUCCESS", "message": "ChromaDB collections rebuilt and re-indexed successfully."}
+    except Exception as e:
+        logger.error(f"Rebuild index failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 def health_check():

@@ -31,5 +31,8 @@ elif not os.path.isabs(CHROMA_DB_PATH):
     CHROMA_DB_PATH = os.path.abspath(os.path.join(BASE_DIR, CHROMA_DB_PATH))
 
 ML_SERVICE_URL = os.getenv("ML_SERVICE_URL", "http://localhost:8000")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "384"))
+
 
 
