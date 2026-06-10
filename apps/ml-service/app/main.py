@@ -8,7 +8,13 @@ from dotenv import load_dotenv
 # Ensure the parent directory (ml-service root) is in sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-load_dotenv()
+# Search for root-level .env
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+root_env = os.path.join(BASE_DIR, ".env")
+if os.path.exists(root_env):
+    load_dotenv(root_env)
+else:
+    load_dotenv()
 
 from app.rag.rag_pipeline import AdIntelRagEngine
 

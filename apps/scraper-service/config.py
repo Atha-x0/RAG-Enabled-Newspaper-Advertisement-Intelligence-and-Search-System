@@ -1,10 +1,14 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
-
-# Project root-level SQLite path
+# Search for root-level .env
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+root_env = os.path.join(BASE_DIR, ".env")
+if os.path.exists(root_env):
+    load_dotenv(root_env)
+else:
+    load_dotenv()
+
 DB_PATH = os.path.join(BASE_DIR, "database.sqlite")
 
 DATABASE_URL = os.getenv("SCRAPER_DATABASE_URL", f"sqlite:///{DB_PATH}")

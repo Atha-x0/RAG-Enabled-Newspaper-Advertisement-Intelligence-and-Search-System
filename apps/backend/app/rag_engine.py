@@ -1,10 +1,8 @@
-import os
 import json
 import logging
-import google.generativeai as genai
 from sqlalchemy.orm import Session
-from models import Product, ProductPrice, Dealer
-from chroma_service import ChromaService
+from app.models import Product, ProductPrice, Dealer
+from app.chroma_service import ChromaService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("RagEngine")
@@ -13,6 +11,7 @@ class RagEngine:
     def __init__(self, chroma_service: ChromaService):
         self.chroma = chroma_service
         self.has_gemini = self.chroma.has_gemini
+        self.genai_client = self.chroma.genai_client
 
     def generate_answer(self, db: Session, question: str, filters: dict = None) -> dict:
         """
@@ -93,11 +92,13 @@ class RagEngine:
         Answer:
         """
         
-        if self.has_gemini:
+        if self.has_gemini and self.genai_client:
             try:
-                # Use Gemini Flash
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                response = model.generate_content(prompt)
+                # Use upgraded google-genai SDK
+                response = self.genai_client.models.generate_content(
+                    model='gemini-1.5-flash',
+                    contents=prompt
+                )
                 return {
                     "answer": response.text.strip(),
                     "sources": source_products
@@ -106,7 +107,7 @@ class RagEngine:
                 logger.error(f"Gemini RAG answer generation failed: {e}")
                 
         # Mock/Fallback response logic if offline or key is missing
-        logger.warning("Gemini API skipped. Generating structured comparative mock summary response.")
+        logger.warning("Gemini API key missing or generation failed. Generating structured comparative mock summary response.")
         
         if not source_products:
             mock_answer = "I could not find any industrial parts or suppliers matching your query in the database. Please adjust your keywords."

@@ -1,8 +1,8 @@
 import datetime
 import uuid
-from sqlalchemy import Column, String, Integer, Float, Text, DateTime, Date, ForeignKey, JSON, DECIMAL, Boolean
+from sqlalchemy import Column, String, Integer, Float, Text, DateTime, JSON, ForeignKey, Boolean
 from sqlalchemy.orm import relationship
-from database import Base
+from app.database import Base
 
 def generate_uuid():
     return str(uuid.uuid4())
@@ -13,7 +13,7 @@ class NewspaperPage(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     filename = Column(String(255), nullable=False)
     file_path = Column(String(1024), nullable=False)
-    publication_date = Column(String(20), nullable=False)  # ISO Date format
+    publication_date = Column(String(20), nullable=False)
     language = Column(String(50), nullable=False)
     total_ads_detected = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -32,7 +32,7 @@ class Advertisement(Base):
     category = Column(String(100), nullable=False)
     location = Column(String(255), nullable=True)
     contact_info = Column(String(255), nullable=True)
-    price = Column(Float, nullable=True)  # Using Float/Double for simplicity and SQLite support
+    price = Column(Float, nullable=True)
     structured_metadata = Column(JSON, default={})
     image_path = Column(String(1024), nullable=True)
     bbox_x1 = Column(Float, nullable=True)
@@ -107,15 +107,15 @@ class ProductPrice(Base):
     shipping_charges = Column(Float, default=0.0)
     delivery_time_days = Column(Integer, default=3)
     dispatch_details = Column(String(500), nullable=True)
-    source_type = Column(String(50), nullable=False)  # e.g., "newspaper_ad", "website", "justdial", "indiamart"
-    source_id = Column(String(100), nullable=True)    # ID of the ad or log
+    source_type = Column(String(50), nullable=False)
+    source_id = Column(String(100), nullable=True)
     source_url = Column(String(1024), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     product = relationship("Product", back_populates="prices")
     dealer = relationship("Dealer", back_populates="prices")
 
-# --- Scraper Management Classes (Mirrored for unified access) ---
+# --- Scraper Management Classes ---
 
 class ScrapeSource(Base):
     __tablename__ = 'scrape_sources'
@@ -123,7 +123,7 @@ class ScrapeSource(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), nullable=False)
     crawling_url = Column(String(500), nullable=False)
-    source_type = Column(String(50), default='epaper_pdf')  # epaper_pdf, html_portal, tender_portal, website_catalog
+    source_type = Column(String(50), default='epaper_pdf')
     cron_schedule = Column(String(50), default='0 6 * * *')
     language = Column(String(20), default='en')
     is_active = Column(Boolean, default=True)
@@ -139,7 +139,7 @@ class ScrapeLog(Base):
     source_url = Column(String(1000), nullable=False)
     file_hash = Column(String(64), unique=True, nullable=True)
     file_path = Column(String(1024), nullable=True)
-    status = Column(String(50), default='PENDING')  # PENDING, SUCCESS, FAILED, DUPLICATE
+    status = Column(String(50), default='PENDING')
     retry_count = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
     downloaded_at = Column(DateTime, default=datetime.datetime.utcnow)

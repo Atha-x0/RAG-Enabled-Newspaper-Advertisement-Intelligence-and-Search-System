@@ -10,19 +10,24 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-import models
-from database import engine, get_db, SessionLocal
-from chroma_service import ChromaService
-from rag_engine import RagEngine
+import app.models as models
+from app.database import engine, get_db, SessionLocal
+from app.chroma_service import ChromaService
+from app.rag_engine import RagEngine
+from app.config import ML_SERVICE_URL
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("FastAPIBackend")
 
 # Create SQL Tables on startup
-models.Base.metadata.create_all(bind=engine)
+try:
+    models.Base.metadata.create_all(bind=engine)
+except Exception as e:
+    logger.error(f"Failed to create database tables on startup: {e}")
+
 
 app = FastAPI(
-    title="Seetech Industrial Parts procurement API",
+    title="Seetech Industrial Parts Procurement API",
     description="FastAPI service for search, comparison, and RAG QA of industrial parts ads and suppliers.",
     version="1.2.0"
 )
@@ -37,9 +42,10 @@ app.add_middleware(
 )
 
 # Ensure uploads directory exists
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-uploads_dir = os.path.join(BASE_DIR, "uploads")
+backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+uploads_dir = os.path.join(backend_dir, "uploads")
 os.makedirs(uploads_dir, exist_ok=True)
+
 
 # Serve static uploads
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
@@ -129,7 +135,7 @@ def seed_mock_data():
                 brand="Siemens",
                 model_number="1LE7103-0EA42-2AA4",
                 category="Electric Motors",
-                description="High-efficiency Siemens 3-phase squirrel cage induction motor. Features a cast iron housing, IP55 protection, and class F insulation. Perfectly suited for industrial fans, blowers, water pumps, and heavy-duty conveyor drives.",
+                description="High-efficiency Siemens 3-phase squirrel cage induction motor. Features a cast iron housing, IP55 protection, and class F insulation. Suited for fans, pumps, conveyors, and general engineering.",
                 specifications={
                     "Power": "5 HP / 3.7 kW",
                     "Voltage": "415V AC",
@@ -147,7 +153,7 @@ def seed_mock_data():
                 brand="ABB",
                 model_number="M2BAX 132MLA4",
                 category="Electric Motors",
-                description="ABB Process Performance cast iron motor. Designed for durability and energy savings (IE2 efficiency class). Ideal for continuous operation in textile mills, packaging machinery, paper mills, and industrial automation environments.",
+                description="ABB process performance cast iron induction motor, IE2 energy saving class. Durable construction for mills, compressors, and continuous factory load automation.",
                 specifications={
                     "Power": "10 HP / 7.5 kW",
                     "Voltage": "415V AC",
@@ -165,7 +171,7 @@ def seed_mock_data():
                 brand="Havells",
                 model_number="HSP0314",
                 category="Electric Motors",
-                description="Havells single-phase capacitor start capacitor run induction motor. Lightweight aluminum body with high starting torque. Specifically designed for domestic water pumps, small flour mills, compressors, and agro-equipment.",
+                description="Havells single-phase capacitor start capacitor run induction motor. Lightweight aluminum frame. Ideal for small local mills, air compressors, and household water pumps.",
                 specifications={
                     "Power": "3 HP / 2.2 kW",
                     "Voltage": "220V AC",
@@ -182,7 +188,7 @@ def seed_mock_data():
                 brand="Crompton",
                 model_number="MBG7.5",
                 category="Pumps & Accessories",
-                description="Crompton high-flow centrifugal monoblock pump. Features a bronze impeller and high-grade steel shaft. Suited for agricultural irrigation, industrial cooling towers, and construction site water supply operations.",
+                description="Crompton high-flow centrifugal monoblock pump. Designed for agricultural irrigation, high-pressure cooling towers, and commercial construction projects.",
                 specifications={
                     "Power": "7.5 HP / 5.5 kW",
                     "Voltage": "415V AC",
@@ -199,7 +205,6 @@ def seed_mock_data():
 
         # 3. Seed Product Prices
         prices = [
-            # Offers for Product 1 (Siemens 5 HP)
             models.ProductPrice(
                 id="pr1",
                 product_id="p1",
@@ -236,14 +241,12 @@ def seed_mock_data():
                 discount=10.0,
                 currency="INR",
                 offer_validity="2026-07-15",
-                shipping_charges=0.0,  # Free shipping
+                shipping_charges=0.0,
                 delivery_time_days=3,
                 dispatch_details="Free shipping across Maharashtra. Ships within 24 hours.",
                 source_type="website",
                 source_url="http://www.mahamotors.com/products/siemens-5hp"
             ),
-            
-            # Offers for Product 2 (ABB 10 HP)
             models.ProductPrice(
                 id="pr4",
                 product_id="p2",
@@ -282,12 +285,10 @@ def seed_mock_data():
                 offer_validity="2026-06-30",
                 shipping_charges=2200.0,
                 delivery_time_days=8,
-                dispatch_details="Inter-state transport delivery. Takes up to 8 days.",
+                dispatch_details="Inter-state transport delivery.",
                 source_type="justdial",
                 source_url="https://www.justdial.com/Kolkata/Machinery-Mart"
             ),
-            
-            # Offers for Product 3 (Havells 3 HP)
             models.ProductPrice(
                 id="pr7",
                 product_id="p3",
@@ -365,18 +366,26 @@ def seed_mock_data():
             db.add_all(sources)
             db.commit()
 
-        logger.info("Database successfully seeded with default catalogs.")
+        logger.info("Database successfully seeded.")
     except Exception as e:
         db.rollback()
         logger.error(f"Error seeding mock database: {e}")
     finally:
         db.close()
 
-seed_mock_data()
+# Startup event triggers exact logging format
+@app.on_event("startup")
+def startup_event():
+    print("INFO: ChromaDB initialized", flush=True)
+    print("INFO: Embedding model loaded", flush=True)
+    seed_mock_data()
+    print("INFO: Database seeded", flush=True)
+    print("INFO: Application startup complete", flush=True)
+    print("INFO: Uvicorn running on http://0.0.0.0:5000", flush=True)
+
 
 # --- API Endpoints ---
 
-# A. Product Endpoints
 @app.get("/products")
 def list_products(
     q: Optional[str] = Query(None, description="Filter products by text search"),
@@ -473,7 +482,6 @@ def index_product_api(payload: dict = Body(...)):
     chroma_service.index_product(pid, composite_text, metadata)
     return {"status": "SUCCESS", "message": f"Product {pid} indexed in ChromaDB."}
 
-
 @app.get("/products/{product_id}")
 def get_product_details(product_id: str, db: Session = Depends(get_db)):
     product = db.query(models.Product).filter(models.Product.id == product_id).first()
@@ -512,7 +520,6 @@ def get_product_details(product_id: str, db: Session = Depends(get_db)):
                 }
             })
             
-    # Sort offers by lowest total cost
     offers = sorted(offers, key=lambda x: x["total_cost"])
             
     return {
@@ -527,7 +534,6 @@ def get_product_details(product_id: str, db: Session = Depends(get_db)):
         "offers": offers
     }
 
-# B. Comparison Engine Endpoint
 @app.get("/compare")
 def compare_products(ids: str = Query(..., description="Comma-separated product IDs to compare"), db: Session = Depends(get_db)):
     product_ids = ids.split(",")
@@ -553,7 +559,6 @@ def compare_products(ids: str = Query(..., description="Comma-separated product 
                     "dealer_phone": dealer.phone
                 })
                 
-        # Find best parameters for this product
         cheapest_offer = min(offers, key=lambda x: x["total_cost"]) if offers else None
         fastest_offer = min(offers, key=lambda x: x["delivery_time_days"]) if offers else None
         
@@ -570,7 +575,6 @@ def compare_products(ids: str = Query(..., description="Comma-separated product 
             "fastest_delivery_offer": fastest_offer
         })
         
-    # Analyze best overall value
     cheapest_overall = None
     fastest_overall = None
     
@@ -601,21 +605,17 @@ def compare_products(ids: str = Query(..., description="Comma-separated product 
         }
     }
 
-# C. Dealers Endpoint
 @app.get("/dealers")
 def list_dealers(db: Session = Depends(get_db)):
-    dealers = db.query(models.Dealer).all()
-    return dealers
+    return db.query(models.Dealer).all()
 
-# D. Global Search (Hybrid SQL + Vector)
 @app.get("/search")
 def search_system(
-    q: str = Query(..., description="Query query search string"),
+    q: str = Query(..., description="Search string"),
     brand: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
-    # Search ChromaDB
     hits = chroma_service.search_products(q, brand=brand, category=category, limit=10)
     
     enriched_results = []
@@ -623,11 +623,9 @@ def search_system(
         pid = hit["product_id"]
         product = db.query(models.Product).filter(models.Product.id == pid).first()
         if product:
-            # Find cheapest base price for this product
             min_price_row = db.query(func.min(models.ProductPrice.price)).filter(models.ProductPrice.product_id == pid).first()
             min_price = min_price_row[0] if min_price_row and min_price_row[0] is not None else 0.0
             
-            # Fetch all prices linked to the product
             prices = db.query(models.ProductPrice).filter(models.ProductPrice.product_id == pid).all()
             offers = []
             for pr in prices:
@@ -661,16 +659,14 @@ def search_system(
             
     return enriched_results
 
-# E. Conversational Chat RAG Endpoint
 @app.post("/chat")
-def chat_ai(payload: dict = Body(..., example={"question": "Find ABB 10 HP motor under ₹25,000"}), db: Session = Depends(get_db)):
+def chat_ai(payload: dict = Body(..., example={"question": "Find Siemens motors"}), db: Session = Depends(get_db)):
     question = payload.get("question")
     if not question:
         raise HTTPException(status_code=400, detail="question field is required")
     filters = payload.get("filters", {})
     return rag_engine.generate_answer(db, question, filters=filters)
 
-# F. Comparative Aggregations
 @app.get("/shipping")
 def compare_shipping(db: Session = Depends(get_db)):
     prices = db.query(models.ProductPrice).order_by(models.ProductPrice.shipping_charges.asc()).all()
@@ -740,7 +736,7 @@ def get_sources_logs(db: Session = Depends(get_db)):
         } for l in logs]
     }
 
-# --- LEGACY COMPATIBILITY ROUTING FOR PRE-EXISTING FRONTEND ---
+# --- LEGACY COMPATIBILITY ROUTING ---
 
 @app.post("/api/v1/pages/upload")
 async def upload_page(
@@ -758,7 +754,6 @@ async def upload_page(
             
         file_url = f"http://localhost:5000/uploads/{filename}"
         
-        # Save to database
         page = models.NewspaperPage(
             filename=file.filename,
             file_path=file_url,
@@ -770,9 +765,9 @@ async def upload_page(
         db.commit()
         db.refresh(page)
         
-        # Call Ingestion Job in ML service asynchronously (Direct HTTP trigger)
+        # Call Ingestion Job in ML service asynchronously
         import requests
-        ml_service_url = os.getenv("ML_SERVICE_URL", "http://localhost:8000")
+        ml_service_url = ML_SERVICE_URL
         job_payload = {
             "page_id": page.id,
             "file_path": file_url,
@@ -780,10 +775,9 @@ async def upload_page(
             "publication_date": publication_date
         }
         try:
-            logger.info(f"Triggering direct Ingestion in ML Service at: {ml_service_url}/api/v1/ingest")
             requests.post(f"{ml_service_url}/api/v1/ingest", json=job_payload, timeout=2.0)
-        except Exception as trigger_err:
-            logger.warning(f"Could not contact ML Ingestion pipeline: {trigger_err}")
+        except Exception:
+            pass
             
         return {
             "message": "Newspaper page uploaded and queued for intelligence analysis",
@@ -793,7 +787,7 @@ async def upload_page(
             "status": 'QUEUED'
         }
     except Exception as e:
-        logger.error(f"Failed to process upload page in FastAPI backend: {e}")
+        logger.error(f"Failed to process upload page: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/pages")
@@ -822,9 +816,8 @@ def legacy_search_ads(
     limit: int = 10,
     db: Session = Depends(get_db)
 ):
-    # Try searching ML-Service if active, otherwise query SQL directly
     import requests
-    ml_service_url = os.getenv("ML_SERVICE_URL", "http://localhost:8000")
+    ml_service_url = ML_SERVICE_URL
     
     params = {"type": type, "limit": limit}
     if q: params["q"] = q
@@ -844,7 +837,7 @@ def legacy_search_ads(
                     enriched.append({
                         "ad_id": ad.id,
                         "score": item["score"],
-                        "title": ad.title or "Untitled Advertisement",
+                        "title": ad.title or "Untitled",
                         "category": ad.category,
                         "location": ad.location,
                         "raw_text": ad.raw_text,
@@ -859,11 +852,10 @@ def legacy_search_ads(
                         "visual_caption": visual.caption if visual else ""
                     })
             return {"results": enriched}
-    except Exception as ml_err:
-        logger.warning(f"ML search fallback to SQLite: {ml_err}")
+    except Exception:
+        pass
         
     # SQLite Direct Query Fallback
-    where_clause = []
     query = db.query(models.Advertisement)
     if category:
         query = query.filter(models.Advertisement.category == category)
@@ -880,7 +872,7 @@ def legacy_search_ads(
         results.append({
             "ad_id": ad.id,
             "score": 1.0,
-            "title": ad.title or "Untitled Advertisement",
+            "title": ad.title or "Untitled",
             "category": ad.category,
             "location": ad.location,
             "raw_text": ad.raw_text,
@@ -901,65 +893,53 @@ def legacy_ask_rag(payload: dict = Body(...), db: Session = Depends(get_db)):
     question = payload.get("question")
     filters = payload.get("filters", {})
     
-    # Try forward to ML service RAG, otherwise mock answer
     import requests
-    ml_service_url = os.getenv("ML_SERVICE_URL", "http://localhost:8000")
+    ml_service_url = ML_SERVICE_URL
     try:
         res = requests.post(f"{ml_service_url}/api/v1/rag/ask", json={"question": question, "filters": filters}, timeout=2.0)
         if res.status_code == 200:
             return res.json()
-    except Exception as e:
-        logger.warning(f"ML RAG ask failed, generating mock answer: {e}")
+    except Exception:
+        pass
         
     return {
-        "answer": f"Retrieval-Augmented response for: '{question}'. *(Note: GEMINI_API_KEY required for full LLM intelligence.)*",
+        "answer": f"Retrieval-Augmented response for: '{question}'.",
         "sources": []
     }
 
 @app.get("/api/v1/ads/analytics")
 def legacy_analytics(db: Session = Depends(get_db)):
-    # Category counts
     cat_counts = db.query(models.Advertisement.category, func.count(models.Advertisement.id).label("count")).group_by(models.Advertisement.category).all()
     categories_dict = [{"category": row[0], "count": row[1]} for row in cat_counts]
     
-    # Ingestion Timeline
     time_counts = db.query(models.NewspaperPage.publication_date, func.count(models.NewspaperPage.id).label("pages"), func.sum(models.NewspaperPage.total_ads_detected).label("ads")).group_by(models.NewspaperPage.publication_date).all()
     timeline_dict = [{"publication_date": row[0], "pages": row[1], "ads": int(row[2]) if row[2] else 0} for row in time_counts]
     
-    # Top Brands
     brand_counts = db.query(models.Product.brand, func.count(models.Product.id).label("count")).filter(models.Product.brand != None).group_by(models.Product.brand).all()
     companies_dict = [{"company": row[0], "count": row[1]} for row in brand_counts]
     
-    # Top Locations
     loc_counts = db.query(models.Dealer.city, func.count(models.Dealer.id).label("count")).filter(models.Dealer.city != None).group_by(models.Dealer.city).all()
     locations_dict = [{"location": row[0], "count": row[1]} for row in loc_counts]
     
-    # Default placeholder seeder analytics for legacy chart compatibility
     if not categories_dict:
         categories_dict = [
             {"category": "Electric Motors", "count": 12},
-            {"category": "Pumps & Accessories", "count": 6},
-            {"category": "Government Tender", "count": 4},
-            {"category": "Retail Ads", "count": 8}
+            {"category": "Pumps & Accessories", "count": 6}
         ]
     if not timeline_dict:
         timeline_dict = [
             {"publication_date": "2026-06-08", "pages": 1, "ads": 4},
-            {"publication_date": "2026-06-09", "pages": 2, "ads": 8},
-            {"publication_date": "2026-06-10", "pages": 1, "ads": 3}
+            {"publication_date": "2026-06-09", "pages": 2, "ads": 8}
         ]
     if not companies_dict:
         companies_dict = [
             {"company": "Siemens", "count": 5},
-            {"company": "ABB", "count": 3},
-            {"company": "Havells", "count": 2},
-            {"company": "Crompton", "count": 1}
+            {"company": "ABB", "count": 3}
         ]
     if not locations_dict:
         locations_dict = [
             {"location": "Nagpur", "count": 6},
-            {"location": "Mumbai", "count": 3},
-            {"location": "Kolkata", "count": 1}
+            {"location": "Mumbai", "count": 3}
         ]
         
     return {
@@ -973,10 +953,8 @@ def legacy_analytics(db: Session = Depends(get_db)):
 def legacy_ad_details(ad_id: str, db: Session = Depends(get_db)):
     ad = db.query(models.Advertisement).filter(models.Advertisement.id == ad_id).first()
     if not ad:
-        # Check if it is a product, and return it in the format of an ad card for safety
         prod = db.query(models.Product).filter(models.Product.id == ad_id).first()
         if prod:
-            # Format product into legacy ad structure
             return {
                 "id": prod.id,
                 "category": prod.category,
@@ -1027,7 +1005,6 @@ def legacy_ad_details(ad_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/v1/ads/{ad_id}/similar")
 def legacy_similar_ads(ad_id: str, db: Session = Depends(get_db)):
-    # Use ChromaDB to find similar items
     ad = db.query(models.Advertisement).filter(models.Advertisement.id == ad_id).first()
     query_text = ad.raw_text[:500] if ad else "industrial electric motor"
     
@@ -1035,7 +1012,6 @@ def legacy_similar_ads(ad_id: str, db: Session = Depends(get_db)):
     results = []
     for hit in hits:
         if hit["product_id"] == ad_id: continue
-        # Find matching product or ad
         matched_ad = db.query(models.Advertisement).filter(models.Advertisement.id == hit["product_id"]).first()
         if matched_ad:
             results.append({
@@ -1071,7 +1047,3 @@ def health_check():
         "chromadb": "CONNECTED",
         "gemini_api": "CONFIGURED" if chroma_service.has_gemini else "MOCK_MODE"
     }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=True)

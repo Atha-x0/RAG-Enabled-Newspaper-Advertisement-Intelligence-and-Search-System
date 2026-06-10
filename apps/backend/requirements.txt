@@ -2,7 +2,15 @@ fastapi
 uvicorn
 sqlalchemy
 chromadb
-google-generativeai
-pydantic
+sentence-transformers
+python-multipart
 python-dotenv
 requests
+google-generativeai
+google-genai
+torch
+transformers
+huggingface-hub
+langchain
+langchain-community
+pydantic

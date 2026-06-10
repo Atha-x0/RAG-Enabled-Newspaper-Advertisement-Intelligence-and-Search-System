@@ -38,7 +38,7 @@ class SourceResponse(SourceCreate):
     id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class LogResponse(BaseModel):
     id: int
@@ -53,7 +53,7 @@ class LogResponse(BaseModel):
     downloaded_at: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 @app.on_event("startup")
 def startup_event():
