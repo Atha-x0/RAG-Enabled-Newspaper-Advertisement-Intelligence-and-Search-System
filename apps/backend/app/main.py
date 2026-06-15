@@ -122,6 +122,62 @@ def seed_mock_data():
                 email="sales@kolkatamachinery.com",
                 website_url="http://www.kolkatamachinery.com",
                 rating=3.9
+            ),
+            models.Dealer(
+                id="d5",
+                name="Bhandari Industrial Corporation",
+                shop_name="Bhandari Traders & Industrial Supplier",
+                address="48, Central Avenue, Near Telephone Exchange Square",
+                city="Nagpur",
+                state="Maharashtra",
+                pin_code="440008",
+                phone="+91-712-2724455",
+                whatsapp="+91-9890112233",
+                email="sales@bhandariindustrial.com",
+                website_url="http://www.bhandariindustrial.com",
+                rating=4.6
+            ),
+            models.Dealer(
+                id="d6",
+                name="Royal Bearing & Machinery Co.",
+                shop_name="Royal Bearing House",
+                address="Shop No. 12, Lohar Chawl, Kalbadevi",
+                city="Mumbai",
+                state="Maharashtra",
+                pin_code="400002",
+                phone="+91-22-22067788",
+                whatsapp="+91-9820088776",
+                email="sales@royalbearing.com",
+                website_url="http://www.royalbearing.com",
+                rating=4.8
+            ),
+            models.Dealer(
+                id="d7",
+                name="Central India Engineering Agencies",
+                shop_name="Central India Engineering Sales Corporation",
+                address="G-8, MIDC Hingna Road",
+                city="Nagpur",
+                state="Maharashtra",
+                pin_code="440016",
+                phone="+91-712-2540966",
+                whatsapp="+91-9422805566",
+                email="info@ciea.co.in",
+                website_url="http://www.ciea.co.in",
+                rating=4.4
+            ),
+            models.Dealer(
+                id="d8",
+                name="Vidarbha Sales & Services",
+                shop_name="Vidarbha Sales Corporation",
+                address="110, Central Avenue Road",
+                city="Nagpur",
+                state="Maharashtra",
+                pin_code="440008",
+                phone="+91-9422112233",
+                whatsapp="+91-9422112233",
+                email="sales@vidarbhasales.com",
+                website_url="http://www.vidarbhasales.com",
+                rating=4.3
             )
         ]
         db.add_all(dealers)
@@ -490,6 +546,54 @@ def index_product_api(payload: dict = Body(...)):
     chroma_service.index_product(pid, composite_text, metadata)
     return {"status": "SUCCESS", "message": f"Product {pid} indexed in ChromaDB."}
 
+@app.put("/products/{product_id}")
+def update_product(product_id: str, product_data: dict = Body(...), db: Session = Depends(get_db)):
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    product.name = product_data.get("name", product.name)
+    product.brand = product_data.get("brand", product.brand)
+    product.model_number = product_data.get("model_number", product.model_number)
+    product.category = product_data.get("category", product.category)
+    product.description = product_data.get("description", product.description)
+    if "specifications" in product_data:
+        product.specifications = product_data["specifications"]
+    product.image_url = product_data.get("image_url", product.image_url)
+    
+    db.commit()
+    db.refresh(product)
+    
+    # Re-index in ChromaDB
+    composite_text = f"Product Name: {product.name} | Brand: {product.brand} | Model: {product.model_number} | Category: {product.category} | Description: {product.description}"
+    metadata = {
+        "name": product.name,
+        "brand": product.brand or "Unknown",
+        "category": product.category,
+        "model_number": product.model_number or ""
+    }
+    chroma_service.index_product(product.id, composite_text, metadata)
+    
+    return {"status": "SUCCESS", "message": f"Product {product_id} updated and re-indexed."}
+
+@app.delete("/products/{product_id}")
+def delete_product(product_id: str, db: Session = Depends(get_db)):
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    db.delete(product)
+    db.commit()
+    
+    # Delete from ChromaDB
+    try:
+        if chroma_service.collection:
+            chroma_service.collection.delete(ids=[product_id])
+    except Exception as e:
+        logger.error(f"Failed to delete product {product_id} from ChromaDB: {e}")
+        
+    return {"status": "SUCCESS", "message": f"Product {product_id} deleted."}
+
 @app.get("/products/{product_id}")
 def get_product_details(product_id: str, db: Session = Depends(get_db)):
     product = db.query(models.Product).filter(models.Product.id == product_id).first()
@@ -617,6 +721,35 @@ def compare_products(ids: str = Query(..., description="Comma-separated product 
 def list_dealers(db: Session = Depends(get_db)):
     return db.query(models.Dealer).all()
 
+@app.get("/categories")
+def get_categories(db: Session = Depends(get_db)):
+    categories = db.query(models.Product.category).distinct().all()
+    return [c[0] for c in categories if c[0]]
+
+@app.get("/brands")
+def get_brands(db: Session = Depends(get_db)):
+    brands = db.query(models.Product.brand).distinct().all()
+    return [b[0] for b in brands if b[0]]
+
+@app.get("/locations")
+def get_locations(db: Session = Depends(get_db)):
+    cities = db.query(models.Dealer.city).distinct().all()
+    return [c[0] for c in cities if c[0]]
+
+@app.get("/logs")
+def get_logs(db: Session = Depends(get_db)):
+    logs = db.query(models.ScrapeLog).order_by(models.ScrapeLog.downloaded_at.desc()).all()
+    return [{
+        "id": l.id,
+        "source_id": l.source_id,
+        "publication_date": l.publication_date,
+        "source_url": l.source_url,
+        "status": l.status,
+        "retry_count": l.retry_count,
+        "error_message": l.error_message,
+        "downloaded_at": l.downloaded_at.isoformat() if l.downloaded_at else None
+    } for l in logs]
+
 @app.get("/search")
 def search_system(
     q: str = Query(..., description="Search string"),
@@ -624,48 +757,110 @@ def search_system(
     category: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
+    SIMILARITY_THRESHOLD = 0.70
+    
+    # Debug Diagnostics variables
+    emb_dim = chroma_service.get_current_dimension()
+    col_dim = 384
+    if chroma_service.collection and chroma_service.collection.metadata:
+        col_dim = chroma_service.collection.metadata.get("embedding_dimension", 384)
+        
+    logger.info(f"--- Search Diagnostics Start ---")
+    logger.info(f"User query: '{q}'")
+    logger.info(f"Embedding dimension: {emb_dim}")
+    logger.info(f"Collection dimension: {col_dim}")
+    
     hits = chroma_service.search_products(q, brand=brand, category=category, limit=10)
     
     enriched_results = []
+    similarity_log_entries = []
+    retrieved_ids = []
+    
     for hit in hits:
         pid = hit["product_id"]
+        retrieved_ids.append(pid)
+        
+        # Cosine Similarity = 1.0 - Cosine Distance
+        distance = float(hit.get("distance", 1.0))
+        similarity = 1.0 - distance
+        
         product = db.query(models.Product).filter(models.Product.id == pid).first()
-        if product:
-            min_price_row = db.query(func.min(models.ProductPrice.price)).filter(models.ProductPrice.product_id == pid).first()
-            min_price = min_price_row[0] if min_price_row and min_price_row[0] is not None else 0.0
-            
-            prices = db.query(models.ProductPrice).filter(models.ProductPrice.product_id == pid).all()
-            offers = []
-            for pr in prices:
-                dealer = db.query(models.Dealer).filter(models.Dealer.id == pr.dealer_id).first()
-                if dealer:
-                    offers.append({
-                        "dealer_name": dealer.name,
-                        "dealer_location": f"{dealer.city}, {dealer.state}",
-                        "price": pr.price,
-                        "shipping_charges": pr.shipping_charges,
-                        "total_cost": pr.price + pr.shipping_charges,
-                        "delivery_time_days": pr.delivery_time_days,
-                        "phone": dealer.phone,
-                        "website": dealer.website_url,
-                        "source": pr.source_type
-                    })
-            
-            enriched_results.append({
-                "id": product.id,
-                "name": product.name,
-                "brand": product.brand,
-                "model_number": product.model_number,
-                "category": product.category,
-                "description": product.description,
-                "specifications": product.specifications,
-                "image_url": product.image_url,
-                "score": float(hit.get("distance", 1.0)),
-                "min_price": min_price,
-                "offers": offers
-            })
-            
-    return enriched_results
+        prod_name = product.name if product else "Unknown Product"
+        similarity_log_entries.append(f"{prod_name} (ID: {pid}): Similarity = {similarity:.4f} (Distance = {distance:.4f})")
+        
+        # Apply similarity threshold filter
+        if similarity >= SIMILARITY_THRESHOLD:
+            if product:
+                min_price_row = db.query(func.min(models.ProductPrice.price)).filter(models.ProductPrice.product_id == pid).first()
+                min_price = min_price_row[0] if min_price_row and min_price_row[0] is not None else 0.0
+                
+                prices = db.query(models.ProductPrice).filter(models.ProductPrice.product_id == pid).all()
+                offers = []
+                for pr in prices:
+                    dealer = db.query(models.Dealer).filter(models.Dealer.id == pr.dealer_id).first()
+                    if dealer:
+                        offers.append({
+                            "dealer_name": dealer.name,
+                            "dealer_location": f"{dealer.city}, {dealer.state}",
+                            "price": pr.price,
+                            "shipping_charges": pr.shipping_charges,
+                            "total_cost": pr.price + pr.shipping_charges,
+                            "delivery_time_days": pr.delivery_time_days,
+                            "phone": dealer.phone,
+                            "website": dealer.website_url,
+                            "source": pr.source_type
+                        })
+                
+                enriched_results.append({
+                    "id": product.id,
+                    "name": product.name,
+                    "brand": product.brand,
+                    "model_number": product.model_number,
+                    "category": product.category,
+                    "description": product.description,
+                    "specifications": product.specifications,
+                    "image_url": product.image_url,
+                    "score": similarity,
+                    "min_price": min_price,
+                    "offers": offers
+                })
+        else:
+            logger.info(f"Filtered out product {prod_name} ({pid}) due to similarity {similarity:.4f} below threshold {SIMILARITY_THRESHOLD}")
+
+    # Format debug outputs
+    logger.info("Similarity scores of candidates:")
+    for entry in similarity_log_entries:
+        logger.info(f"  - {entry}")
+    logger.info(f"Retrieved product ids from vector search: {retrieved_ids}")
+    
+    if not enriched_results:
+        # Trigger real-time web scraping and dynamic index generation!
+        logger.info(f"No local matches for '{q}' above threshold. Running real-time procures scraper...")
+        try:
+            from app.dynamic_search_service import DynamicSearchService
+            dynamic_search = DynamicSearchService(chroma_service)
+            enriched_results = dynamic_search.search_product(db, q)
+        except Exception as e:
+            logger.error(f"DynamicSearchService failed: {e}")
+
+    if not enriched_results:
+        response_body = {
+            "results": [],
+            "message": "No matching industrial products found."
+        }
+        logger.info("Final response: No products found")
+        logger.info("--- Search Diagnostics End ---")
+        return response_body
+        
+    response_body = {
+        "results": enriched_results,
+        "message": f"Found {len(enriched_results)} matching industrial products."
+    }
+    logger.info(f"Final response: Found {len(enriched_results)} products (IDs: {[item['id'] for item in enriched_results]})")
+    logger.info("--- Search Diagnostics End ---")
+    return response_body
+
+
 
 @app.post("/chat")
 def chat_ai(payload: dict = Body(..., example={"question": "Find Siemens motors"}), db: Session = Depends(get_db)):

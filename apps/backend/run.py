@@ -18,7 +18,8 @@ REQUIRED_PACKAGES = [
     "huggingface-hub",
     "langchain",
     "langchain-community",
-    "pydantic"
+    "pydantic",
+    "qdrant-client"
 ]
 
 def check_and_install_dependencies():
@@ -36,6 +37,8 @@ def check_and_install_dependencies():
             import_name = "sentence_transformers"
         elif package == "langchain-community":
             import_name = "langchain_community"
+        elif package == "qdrant-client":
+            import_name = "qdrant_client"
             
         try:
             if "." in import_name:

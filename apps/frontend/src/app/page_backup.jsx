@@ -241,7 +241,7 @@ function Dashboard() {
               <button
                 key={tab.id}
                 onClick={() => { setActiveTab(tab.id); setIsSidebarOpen(false); }}
-                className={`flex items-center w-full px-4 py-3 text-sm font-semibold rounded-2xl transition-smooth ${isActive ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-905'}`}
+                className={`flex items-center w-full px-4 py-3 text-sm font-semibold rounded-2xl transition-smooth ${isActive ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'}`}
               >
                 <Icon className={`h-5 w-5 mr-3 ${isActive ? 'text-blue-600' : 'text-slate-400'}`} />
                 {tab.label}
@@ -662,7 +662,7 @@ function ProductCard({ product, onViewDetails, onToggleCompare, inCompareList })
           </div>
           <h4 
             onClick={() => onViewDetails(product.id)}
-            className="text-xl font-bold text-slate-900 cursor-pointer hover:text-blue-650 transition-smooth leading-tight"
+            className="text-xl font-bold text-slate-900 cursor-pointer hover:text-blue-600 transition-smooth leading-tight"
           >
             {product.name}
           </h4>
@@ -1304,7 +1304,7 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
                       </button>
                       <button 
                         onClick={() => onDelete(p.id)}
-                        className="p-2 text-slate-400 hover:text-red-650 rounded-lg hover:bg-slate-100 transition-colors"
+                        className="p-2 text-slate-400 hover:text-red-600 rounded-lg hover:bg-slate-100 transition-colors"
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -1343,7 +1343,7 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
                     </div>
                   </td>
                   <td className="py-4.5 font-mono text-slate-600">{d.phone || 'N/A'}</td>
-                  <td className="py-4.5 text-slate-660">{d.email || 'N/A'}</td>
+                  <td className="py-4.5 text-slate-600">{d.email || 'N/A'}</td>
                 </tr>
               ))}
             </tbody>
@@ -1407,7 +1407,7 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
                   <td className="py-3 text-slate-500 font-mono text-[10px]">
                     {log.downloaded_at ? new Date(log.downloaded_at).toLocaleString() : 'N/A'}
                   </td>
-                  <td className="py-3 text-slate-605 font-mono">{log.publication_date}</td>
+                  <td className="py-3 text-slate-600 font-mono">{log.publication_date}</td>
                   <td className="py-3 text-slate-650 font-mono truncate max-w-[200px]" title={log.source_url}>{log.source_url}</td>
                   <td className="py-3">
                     <span className={`inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold ${log.status === 'SUCCESS' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-700 border border-red-100'}`}>
@@ -1454,7 +1454,7 @@ function AnalyticsPage() {
           { label: 'Cataloged Parts', value: '6', color: 'bg-blue-500/10 text-blue-600', icon: Database },
           { label: 'Active Suppliers', value: '4', color: 'bg-emerald-500/10 text-emerald-600', icon: Layers },
           { label: 'Total Quotes Indexed', value: '10', color: 'bg-amber-500/10 text-amber-600', icon: FileText },
-          { label: 'Ad Scraping rate', value: '98.5%', color: 'bg-indigo-500/10 text-indigo-650', icon: Sparkles }
+          { label: 'Ad Scraping rate', value: '98.5%', color: 'bg-indigo-500/10 text-indigo-600', icon: Sparkles }
         ].map((item, idx) => {
           const Icon = item.icon;
           return (
@@ -1624,7 +1624,7 @@ function ProductDetailsModal({ productId, onClose }) {
           </div>
           <button 
             onClick={onClose}
-            className="text-slate-450 hover:text-slate-900 p-2 rounded-full hover:bg-slate-100 transition-colors"
+            className="text-slate-400 hover:text-slate-900 p-2 rounded-full hover:bg-slate-100 transition-colors"
           >
             <X className="h-5 w-5" />
           </button>

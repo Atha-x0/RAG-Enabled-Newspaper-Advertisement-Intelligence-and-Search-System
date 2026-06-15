@@ -28,7 +28,7 @@ class ChromaService:
         self.collection = None
         self.dimension_verified = False
         
-        # Setup Gemini genai client
+        # Setup Gemini genai client (used only for Chat/Generation in RagEngine)
         if GEMINI_API_KEY:
             try:
                 self.genai_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -46,7 +46,7 @@ class ChromaService:
         # Lazy background loader setup for SentenceTransformer
         self._hf_model = None
         self._hf_loading_failed = False
-        self.embedding_dim = EMBEDDING_DIMENSION  # Default dimension from config
+        self.embedding_dim = EMBEDDING_DIMENSION  # Default dimension (384)
         self._lock = threading.Lock()
         
         # Start background thread to load model (non-blocking lazy load)
@@ -68,11 +68,8 @@ class ChromaService:
                 self.verify_collection_dimension()
             except Exception as e:
                 self._hf_loading_failed = True
-                logger.warning(
-                    f"Embedding model unavailable: {e}. Startup will continue with mock/Gemini fallbacks."
-                )
-                self.dimension_verified = False
-                self.verify_collection_dimension()
+                logger.error(f"Embedding model initialization failed: {e}")
+                # We do not verify or set verified=True because model is missing/failed
 
     def get_current_dimension(self) -> int:
         if self._hf_model:
@@ -81,10 +78,6 @@ class ChromaService:
                 return len(test_emb)
             except Exception as e:
                 logger.error(f"Error checking dimension of local model: {e}")
-                
-        if self.has_gemini and self.genai_client:
-            return 768
-            
         return EMBEDDING_DIMENSION
 
     def create_collection_with_metadata(self, dimension: int):
@@ -99,16 +92,17 @@ class ChromaService:
                 name=CHROMA_COLLECTION,
                 metadata={
                     "embedding_dimension": dimension,
-                    "embedding_model": EMBEDDING_MODEL
+                    "embedding_model": EMBEDDING_MODEL,
+                    "hnsw:space": "cosine"
                 }
             )
-            logger.info(f"Created collection '{CHROMA_COLLECTION}' with dimension {dimension} and model {EMBEDDING_MODEL}")
+            logger.info(f"Created collection '{CHROMA_COLLECTION}' with space=cosine, dimension={dimension}, model={EMBEDDING_MODEL}")
         except Exception as e:
             logger.error(f"Failed to create collection with metadata: {e}")
 
     def verify_collection_dimension(self) -> bool:
         """
-        Verifies if the existing collection's dimension matches the current dimension.
+        Verifies if the existing collection's dimension matches the current dimension and space is cosine.
         If a mismatch is found, it deletes the collection, recreates it, and rebuilds the index.
         Returns True if a rebuild was executed, False otherwise.
         """
@@ -124,8 +118,9 @@ class ChromaService:
             collection = self.client.get_collection(name=CHROMA_COLLECTION)
             metadata = collection.metadata or {}
             col_dim = metadata.get("embedding_dimension")
+            col_space = metadata.get("hnsw:space")
             
-            if col_dim is None or col_dim != current_dim:
+            if col_dim is None or col_dim != current_dim or col_space != "cosine":
                 logger.warning("Embedding dimension mismatch detected. Rebuilding ChromaDB.")
                 print("Embedding dimension mismatch detected. Rebuilding ChromaDB.", flush=True)
                 
@@ -226,32 +221,15 @@ class ChromaService:
         return True
 
     def _get_embedding(self, text: str) -> list:
-        # 1. Try local SentenceTransformer (bge-small-en-v1.5 / config model)
-        if self._hf_model:
-            try:
-                embedding = self._hf_model.encode(text)
-                return embedding.tolist()
-            except Exception as e:
-                logger.error(f"SentenceTransformer encoding failed: {e}")
-        
-        # 2. Try Gemini API
-        if self.has_gemini and self.genai_client:
-            try:
-                response = self.genai_client.models.embed_content(
-                    model="text-embedding-004",
-                    contents=text
-                )
-                if hasattr(response, 'embeddings') and response.embeddings:
-                    return response.embeddings[0].values
-                elif hasattr(response, 'embedding') and hasattr(response.embedding, 'values'):
-                    return response.embedding.values
-            except Exception as e:
-                logger.error(f"Gemini API embedding generation failed: {e}")
-                
-        # 3. Fallback mock vector (All zeroes of size matching current dimension)
-        dim = self.get_current_dimension()
-        logger.warning(f"Using mock vector fallback [0.0] * {dim}")
-        return [0.0] * dim
+        # Enforce ONLY local SentenceTransformer model (no Gemini, no mock vectors)
+        if not self._hf_model:
+            raise RuntimeError("Embedding model unavailable")
+        try:
+            embedding = self._hf_model.encode(text)
+            return embedding.tolist()
+        except Exception as e:
+            logger.error(f"SentenceTransformer encoding failed: {e}")
+            raise RuntimeError(f"Embedding model unavailable: {e}") from e
 
     def index_product(self, product_id: str, text: str, metadata: dict):
         self.verify_collection_dimension()
