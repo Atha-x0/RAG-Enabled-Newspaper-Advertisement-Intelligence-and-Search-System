@@ -15,13 +15,26 @@ from app.database import engine, get_db, SessionLocal
 from app.chroma_service import ChromaService
 from app.rag_engine import RagEngine
 from app.config import ML_SERVICE_URL
+from app.web_search_service import WebSearchService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("FastAPIBackend")
 
-# Create SQL Tables on startup
+# Create SQL Tables on startup and execute migration checks
 try:
     models.Base.metadata.create_all(bind=engine)
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE scrape_sources ADD COLUMN priority INTEGER DEFAULT 3"))
+            logger.info("Migration: Added column 'priority' to 'scrape_sources'.")
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE scrape_sources ADD COLUMN is_permanent BOOLEAN DEFAULT 0"))
+            logger.info("Migration: Added column 'is_permanent' to 'scrape_sources'.")
+        except Exception:
+            pass
 except Exception as e:
     logger.error(f"Failed to create database tables on startup: {e}")
 
@@ -53,6 +66,7 @@ app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 # Initialize Chroma and RAG Services
 chroma_service = ChromaService()
 rag_engine = RagEngine(chroma_service)
+web_search_service = WebSearchService()
 
 # Database Seeder function
 def seed_mock_data():
@@ -398,7 +412,9 @@ def seed_mock_data():
                     source_type="indiamart",
                     cron_schedule="0 9 * * *",
                     language="en",
-                    is_active=True
+                    is_active=True,
+                    priority=4,
+                    is_permanent=True
                 ),
                 models.ScrapeSource(
                     id=2,
@@ -407,7 +423,9 @@ def seed_mock_data():
                     source_type="justdial",
                     cron_schedule="0 10 * * *",
                     language="en",
-                    is_active=True
+                    is_active=True,
+                    priority=2,
+                    is_permanent=True
                 ),
                 models.ScrapeSource(
                     id=3,
@@ -416,7 +434,9 @@ def seed_mock_data():
                     source_type="website_catalog",
                     cron_schedule="0 6 * * *",
                     language="en",
-                    is_active=True
+                    is_active=True,
+                    priority=3,
+                    is_permanent=True
                 )
             ]
             db.add_all(sources)
@@ -750,115 +770,319 @@ def get_logs(db: Session = Depends(get_db)):
         "downloaded_at": l.downloaded_at.isoformat() if l.downloaded_at else None
     } for l in logs]
 
+def translate_query_if_regional(q: str) -> str:
+    if not q or not q.strip():
+        return q
+    import re
+    has_devanagari = bool(re.search(r"[\u0900-\u097F]", q))
+    if not has_devanagari:
+        return q
+
+    # Try Gemini translation
+    if chroma_service.has_gemini and chroma_service.genai_client:
+        try:
+            model_name = "gemini-2.0-flash"
+            try:
+                available_models = [m.name for m in chroma_service.genai_client.models.list()]
+                for m in ['models/gemini-3.5-flash', 'models/gemini-2.0-flash', 'models/gemini-2.5-pro']:
+                    if m in available_models:
+                        model_name = m.replace('models/', '')
+                        break
+            except Exception:
+                pass
+
+            prompt = (
+                "Translate the following Indian regional query text into simple English. "
+                "Do not explain, add comments, or wrap in markdown. Just return the translation.\n\n"
+                f"=== QUERY ===\n{q}"
+            )
+            response = chroma_service.genai_client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            translated = response.text.strip()
+            if translated:
+                logger.info(f"main.py: Translated regional search query '{q}' to '{translated}' using Gemini.")
+                return translated
+        except Exception as e:
+            logger.warning(f"main.py: Gemini search query translation failed: {e}. Falling back to local dict.")
+            pass
+
+    # Local dictionary fallback
+    import sys
+    _scraper_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../scraper-service"))
+    if _scraper_path not in sys.path:
+        sys.path.insert(0, _scraper_path)
+    try:
+        from ad_classifier import LOCAL_TRANSLATION_MAP
+        text_lower = q.lower()
+        phrases = {
+            "तांब्याची वायर": "copper wire",
+            "तांब्याची केबल": "copper cable",
+            "कॉपर वायर": "copper wire",
+            "कॉपर केबल": "copper cable",
+        }
+        for phrase, eng in phrases.items():
+            text_lower = text_lower.replace(phrase, eng)
+
+        words = text_lower.split()
+        translated_words = []
+        for word in words:
+            clean_word = re.sub(r"[^\w\u0900-\u097F]", "", word)
+            if clean_word in LOCAL_TRANSLATION_MAP:
+                translated_words.append(LOCAL_TRANSLATION_MAP[clean_word])
+            else:
+                translated_words.append(word)
+        return " ".join(translated_words)
+    except Exception:
+        pass
+
+    return q
+
 @app.get("/search")
 def search_system(
-    q: str = Query(..., description="Search string"),
+    q: str = Query(..., description="Natural language search string"),
     brand: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
+    location: Optional[str] = Query(None),
+    include_web: bool = Query(True, description="Include real-time web scraped results"),
     db: Session = Depends(get_db)
 ):
-    SIMILARITY_THRESHOLD = 0.70
-    
-    # Debug Diagnostics variables
-    emb_dim = chroma_service.get_current_dimension()
-    col_dim = 384
-    if chroma_service.collection and chroma_service.collection.metadata:
-        col_dim = chroma_service.collection.metadata.get("embedding_dimension", 384)
-        
-    logger.info(f"--- Search Diagnostics Start ---")
-    logger.info(f"User query: '{q}'")
-    logger.info(f"Embedding dimension: {emb_dim}")
-    logger.info(f"Collection dimension: {col_dim}")
-    
-    hits = chroma_service.search_products(q, brand=brand, category=category, limit=10)
-    
-    enriched_results = []
-    similarity_log_entries = []
+    """
+    Unified search endpoint combining:
+    1. Local vector (ChromaDB semantic) search
+    2. AI-powered dynamic search (Gemini grounding)
+    3. Real-time web scraping (newspapers → dealers → manufacturers → directories)
+
+    Results are ranked by source priority and relevance score.
+    Every result includes its origin source so users can trace information.
+    """
+    SIMILARITY_THRESHOLD = 0.65
+
+    # Translate regional queries first
+    q = translate_query_if_regional(q)
+
+    logger.info(f"=== Unified Search: '{q}' [brand={brand}, cat={category}, loc={location}] ===")
+
+    # ── Step 1: Expand query for better matching ──────────────────────────────
+    expanded_query = q
+    inferred_category = category
+    inferred_location = location
+    try:
+        from app.web_search_service import WebSearchService as _WSS
+        _expander_instance = getattr(web_search_service, 'expander', None)
+        if _expander_instance:
+            expanded = _expander_instance.expand(q)
+            expanded_query = expanded.get("normalized", q)
+            inferred_category = category or expanded.get("category")
+            inferred_location = location or expanded.get("location")
+            logger.info(f"Query expanded: '{q}' → '{expanded_query}' cat={inferred_category}")
+    except Exception as e:
+        logger.warning(f"Query expansion failed: {e}")
+
+    # ── Step 2: Local vector search ───────────────────────────────────────────
+    hits = chroma_service.search_products(
+        expanded_query, brand=brand, category=inferred_category, limit=10
+    )
+
+    local_results = []
     retrieved_ids = []
-    
+
     for hit in hits:
         pid = hit["product_id"]
         retrieved_ids.append(pid)
-        
-        # Cosine Similarity = 1.0 - Cosine Distance
         distance = float(hit.get("distance", 1.0))
         similarity = 1.0 - distance
-        
-        product = db.query(models.Product).filter(models.Product.id == pid).first()
-        prod_name = product.name if product else "Unknown Product"
-        similarity_log_entries.append(f"{prod_name} (ID: {pid}): Similarity = {similarity:.4f} (Distance = {distance:.4f})")
-        
-        # Apply similarity threshold filter
-        if similarity >= SIMILARITY_THRESHOLD:
-            if product:
-                min_price_row = db.query(func.min(models.ProductPrice.price)).filter(models.ProductPrice.product_id == pid).first()
-                min_price = min_price_row[0] if min_price_row and min_price_row[0] is not None else 0.0
-                
-                prices = db.query(models.ProductPrice).filter(models.ProductPrice.product_id == pid).all()
-                offers = []
-                for pr in prices:
-                    dealer = db.query(models.Dealer).filter(models.Dealer.id == pr.dealer_id).first()
-                    if dealer:
-                        offers.append({
-                            "dealer_name": dealer.name,
-                            "dealer_location": f"{dealer.city}, {dealer.state}",
-                            "price": pr.price,
-                            "shipping_charges": pr.shipping_charges,
-                            "total_cost": pr.price + pr.shipping_charges,
-                            "delivery_time_days": pr.delivery_time_days,
-                            "phone": dealer.phone,
-                            "website": dealer.website_url,
-                            "source": pr.source_type
-                        })
-                
-                enriched_results.append({
-                    "id": product.id,
-                    "name": product.name,
-                    "brand": product.brand,
-                    "model_number": product.model_number,
-                    "category": product.category,
-                    "description": product.description,
-                    "specifications": product.specifications,
-                    "image_url": product.image_url,
-                    "score": similarity,
-                    "min_price": min_price,
-                    "offers": offers
-                })
-        else:
-            logger.info(f"Filtered out product {prod_name} ({pid}) due to similarity {similarity:.4f} below threshold {SIMILARITY_THRESHOLD}")
 
-    # Format debug outputs
-    logger.info("Similarity scores of candidates:")
-    for entry in similarity_log_entries:
-        logger.info(f"  - {entry}")
-    logger.info(f"Retrieved product ids from vector search: {retrieved_ids}")
-    
-    if not enriched_results:
-        # Trigger real-time web scraping and dynamic index generation!
-        logger.info(f"No local matches for '{q}' above threshold. Running real-time procures scraper...")
+        product = db.query(models.Product).filter(models.Product.id == pid).first()
+        if not product:
+            continue
+        logger.info(f"  Vector hit: {product.name} similarity={similarity:.4f}")
+
+        if similarity >= SIMILARITY_THRESHOLD:
+            min_price_row = db.query(func.min(models.ProductPrice.price)).filter(
+                models.ProductPrice.product_id == pid).first()
+            min_price = min_price_row[0] if min_price_row and min_price_row[0] is not None else 0.0
+
+            prices = db.query(models.ProductPrice).filter(models.ProductPrice.product_id == pid).all()
+            offers = []
+            for pr in prices:
+                dealer = db.query(models.Dealer).filter(models.Dealer.id == pr.dealer_id).first()
+                if dealer:
+                    offers.append({
+                        "dealer_name": dealer.name,
+                        "dealer_location": f"{dealer.city}, {dealer.state}",
+                        "price": pr.price,
+                        "shipping_charges": pr.shipping_charges,
+                        "total_cost": pr.price + pr.shipping_charges,
+                        "delivery_time_days": pr.delivery_time_days,
+                        "phone": dealer.phone,
+                        "website": dealer.website_url,
+                        "source": pr.source_type,
+                        "source_url": pr.source_url,
+                    })
+
+            local_results.append({
+                "id": product.id,
+                "name": product.name,
+                "brand": product.brand,
+                "model_number": product.model_number,
+                "category": product.category,
+                "description": product.description,
+                "specifications": product.specifications,
+                "image_url": product.image_url,
+                "score": similarity,
+                "min_price": min_price,
+                "offers": offers,
+                "result_type": "local_catalog",
+                "source_name": "Local Catalog",
+                "source_type": "local",
+                "source_priority": 5,
+            })
+
+    logger.info(f"Local vector search: {len(local_results)} results above threshold {SIMILARITY_THRESHOLD}")
+
+    # ── Step 3: AI-powered dynamic search (Gemini) if local results thin ─────
+    dynamic_results = []
+    if len(local_results) < 3:
+        logger.info(f"Local results sparse. Triggering AI dynamic search for '{q}'...")
         try:
             from app.dynamic_search_service import DynamicSearchService
             dynamic_search = DynamicSearchService(chroma_service)
-            enriched_results = dynamic_search.search_product(db, q)
+            dynamic_results = dynamic_search.search_product(db, q)
+            for dr in dynamic_results:
+                dr["result_type"] = "ai_generated"
+                dr["source_name"] = dr.get("source_name", "AI Search Grounding")
+                dr["source_type"] = dr.get("source_type", "ai_grounding")
+                dr["source_priority"] = dr.get("source_priority", 3)
+            logger.info(f"AI dynamic search returned {len(dynamic_results)} results.")
         except Exception as e:
             logger.error(f"DynamicSearchService failed: {e}")
 
-    if not enriched_results:
-        response_body = {
+    # ── Step 4: Real-time web scraping ────────────────────────────────────────
+    web_results = []
+    if include_web:
+        logger.info(f"Running real-time web scraping for '{q}'...")
+        try:
+            web_results = web_search_service.search(
+                db=db,
+                query=q,
+                category=inferred_category,
+                location=inferred_location,
+                limit=12,
+            )
+            logger.info(f"Real-time web scraping returned {len(web_results)} results.")
+        except Exception as e:
+            logger.error(f"WebSearchService failed: {e}")
+
+    # ── Step 5: Merge and rank all results ────────────────────────────────────
+    # Web scraped results are already sorted by source_priority + relevance.
+    # Newspaper ads (priority=1) appear first, then dealers (2), manufacturers (3), etc.
+    # Local catalog results are appended after.
+    all_results = []
+
+    # Add web results first (prioritized by source_priority)
+    all_results.extend(web_results)
+
+    # Merge local results (dedup by id)
+    existing_ids = {r.get("id") for r in all_results}
+    for r in local_results:
+        if r["id"] not in existing_ids:
+            all_results.append(r)
+            existing_ids.add(r["id"])
+
+    for r in dynamic_results:
+        if r.get("id") and r["id"] not in existing_ids:
+            all_results.append(r)
+            existing_ids.add(r["id"])
+
+    if not all_results:
+        logger.info(f"No results found for '{q}'")
+        return {
             "results": [],
-            "message": "No matching industrial products found."
+            "web_results": [],
+            "message": "No verified results found",
+            "search_meta": {
+                "query": q,
+                "expanded_query": expanded_query,
+                "inferred_category": inferred_category,
+                "inferred_location": inferred_location,
+            }
         }
-        logger.info("Final response: No products found")
-        logger.info("--- Search Diagnostics End ---")
-        return response_body
-        
-    response_body = {
-        "results": enriched_results,
-        "message": f"Found {len(enriched_results)} matching industrial products."
+
+    logger.info(f"=== Unified Search complete: {len(all_results)} total results ===")
+
+    return {
+        "results": [r for r in all_results if r.get("result_type") in ("local_catalog", "ai_generated")],
+        "web_results": [r for r in all_results if r.get("result_type") == "web_scraped"],
+        "all_results": all_results,
+        "message": f"Found {len(all_results)} results from multiple sources.",
+        "search_meta": {
+            "query": q,
+            "expanded_query": expanded_query,
+            "inferred_category": inferred_category,
+            "inferred_location": inferred_location,
+            "local_count": len(local_results),
+            "web_count": len(web_results),
+            "ai_count": len(dynamic_results),
+        }
     }
-    logger.info(f"Final response: Found {len(enriched_results)} products (IDs: {[item['id'] for item in enriched_results]})")
-    logger.info("--- Search Diagnostics End ---")
-    return response_body
+
+
+@app.get("/search/web")
+def search_web_only(
+    q: str = Query(..., description="Real-time web search query"),
+    category: Optional[str] = Query(None),
+    location: Optional[str] = Query(None),
+    limit: int = Query(15, ge=1, le=50),
+    db: Session = Depends(get_db)
+):
+    """
+    Performs real-time web scraping ONLY (no local vector database).
+    Returns results directly from newspapers, dealer sites, manufacturer pages,
+    and business directories.
+    """
+    logger.info(f"Web-only search: '{q}'")
+    try:
+        results = web_search_service.search(
+            db=db, query=q, category=category, location=location, limit=limit
+        )
+        return {
+            "results": results,
+            "count": len(results),
+            "query": q,
+            "message": f"Found {len(results)} real-time web results." if results
+                       else "No verified results found",
+        }
+    except Exception as e:
+        logger.error(f"Web search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Web search failed: {str(e)}")
+
+
+@app.get("/search/autocomplete")
+def search_autocomplete(
+    q: str = Query(..., min_length=2, description="Partial search query"),
+    limit: int = Query(8, ge=1, le=20),
+):
+    """Returns autocomplete suggestions for a partial search query."""
+    try:
+        suggestions = web_search_service.get_autocomplete_suggestions(q, limit=limit)
+        return {"suggestions": suggestions, "query": q}
+    except Exception as e:
+        logger.warning(f"Autocomplete failed: {e}")
+        return {"suggestions": [], "query": q}
+
+
+@app.get("/search/history")
+def get_search_history(limit: int = Query(20), db: Session = Depends(get_db)):
+    """Returns recent search history."""
+    return web_search_service.get_search_history(db, limit=limit)
+
+
+@app.get("/search/trending")
+def get_trending_searches(limit: int = Query(10), db: Session = Depends(get_db)):
+    """Returns most frequently searched queries."""
+    return web_search_service.get_trending_searches(db, limit=limit)
 
 
 
@@ -913,10 +1137,25 @@ def compare_prices(brand: Optional[str] = None, db: Session = Depends(get_db)):
             })
     return results
 
+from pydantic import BaseModel, Field
+
+class ScrapeSourceCreate(BaseModel):
+    name: str
+    crawling_url: str
+    source_type: str = "epaper_pdf"
+    cron_schedule: str = "0 6 * * *"
+    language: str = "en"
+    is_active: bool = True
+    priority: int = 3
+    is_permanent: bool = False
+    region: Optional[str] = None
+    verification_status: str = "PENDING"
+    last_crawl_time: Optional[datetime.datetime] = None
+
 @app.get("/sources")
 def get_sources_logs(db: Session = Depends(get_db)):
     sources = db.query(models.ScrapeSource).all()
-    logs = db.query(models.ScrapeLog).order_by(models.ScrapeLog.downloaded_at.desc()).limit(20).all()
+    logs = db.query(models.ScrapeLog).order_by(models.ScrapeLog.downloaded_at.desc()).limit(100).all()
     
     return {
         "sources": [{
@@ -926,7 +1165,9 @@ def get_sources_logs(db: Session = Depends(get_db)):
             "source_type": s.source_type,
             "cron_schedule": s.cron_schedule,
             "language": s.language,
-            "is_active": s.is_active
+            "is_active": s.is_active,
+            "priority": s.priority,
+            "is_permanent": s.is_permanent
         } for s in sources],
         "logs": [{
             "id": l.id,
@@ -938,6 +1179,150 @@ def get_sources_logs(db: Session = Depends(get_db)):
             "downloaded_at": l.downloaded_at.isoformat()
         } for l in logs]
     }
+
+import requests
+SCRAPER_SERVICE_URL = "http://localhost:8010"
+
+@app.post("/sources")
+def create_scrape_source(source_data: ScrapeSourceCreate, db: Session = Depends(get_db)):
+    try:
+        source = models.ScrapeSource(
+            name=source_data.name,
+            crawling_url=source_data.crawling_url,
+            source_type=source_data.source_type,
+            cron_schedule=source_data.cron_schedule,
+            language=source_data.language,
+            is_active=source_data.is_active,
+            priority=source_data.priority,
+            is_permanent=source_data.is_permanent
+        )
+        db.add(source)
+        db.commit()
+        db.refresh(source)
+
+        try:
+            resp = requests.post(f"{SCRAPER_SERVICE_URL}/api/v1/scraper/sources", json=source_data.dict(), timeout=2.0)
+            if resp.status_code != 201:
+                logger.warning(f"Failed to sync source to scraper service: {resp.text}")
+        except Exception as sync_err:
+            logger.warning(f"Connection failed to scraper service for sync: {sync_err}")
+
+        return source
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Failed to create source: {str(e)}")
+
+@app.put("/sources/{source_id}")
+def update_scrape_source(source_id: int, source_data: ScrapeSourceCreate, db: Session = Depends(get_db)):
+    try:
+        source = db.query(models.ScrapeSource).filter(models.ScrapeSource.id == source_id).first()
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
+
+        source.name = source_data.name
+        source.crawling_url = source_data.crawling_url
+        source.source_type = source_data.source_type
+        source.cron_schedule = source_data.cron_schedule
+        source.language = source_data.language
+        source.is_active = source_data.is_active
+        source.priority = source_data.priority
+        source.is_permanent = source_data.is_permanent
+        db.commit()
+        db.refresh(source)
+
+        try:
+            resp = requests.put(f"{SCRAPER_SERVICE_URL}/api/v1/scraper/sources/{source_id}", json=source_data.dict(), timeout=2.0)
+            if resp.status_code != 200:
+                logger.warning(f"Failed to sync update to scraper service: {resp.text}")
+        except Exception as sync_err:
+            logger.warning(f"Connection failed to scraper service for sync: {sync_err}")
+
+        return source
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=400, detail=f"Failed to update source: {str(e)}")
+
+@app.delete("/sources/{source_id}")
+def delete_scrape_source(source_id: int, bypass_permanent: bool = Query(False), db: Session = Depends(get_db)):
+    try:
+        source = db.query(models.ScrapeSource).filter(models.ScrapeSource.id == source_id).first()
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
+
+        if source.is_permanent and not bypass_permanent:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete permanently registered source. Please confirm permanent bypass."
+            )
+
+        try:
+            resp = requests.delete(f"{SCRAPER_SERVICE_URL}/api/v1/scraper/sources/{source_id}?bypass_permanent={str(bypass_permanent).lower()}", timeout=2.0)
+            if resp.status_code not in (200, 204):
+                logger.warning(f"Failed to sync delete to scraper service: {resp.text}")
+        except Exception as sync_err:
+            logger.warning(f"Connection failed to scraper service for sync: {sync_err}")
+
+        db.delete(source)
+        db.commit()
+        return {"status": "SUCCESS", "message": "Source removed successfully"}
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=400, detail=f"Failed to delete source: {str(e)}")
+
+@app.post("/sources/{source_id}/toggle")
+def toggle_scrape_source(source_id: int, db: Session = Depends(get_db)):
+    try:
+        source = db.query(models.ScrapeSource).filter(models.ScrapeSource.id == source_id).first()
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
+
+        source.is_active = not source.is_active
+        db.commit()
+        db.refresh(source)
+
+        source_data = ScrapeSourceCreate(
+            name=source.name,
+            crawling_url=source.crawling_url,
+            source_type=source.source_type,
+            cron_schedule=source.cron_schedule,
+            language=source.language,
+            is_active=source.is_active,
+            priority=source.priority,
+            is_permanent=source.is_permanent
+        )
+        try:
+            resp = requests.put(f"{SCRAPER_SERVICE_URL}/api/v1/scraper/sources/{source_id}", json=source_data.dict(), timeout=2.0)
+            if resp.status_code != 200:
+                logger.warning(f"Failed to sync toggle to scraper service: {resp.text}")
+        except Exception as sync_err:
+            logger.warning(f"Connection failed to scraper service for sync: {sync_err}")
+
+        return source
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=400, detail=f"Failed to toggle source: {str(e)}")
+
+@app.post("/sources/{source_id}/trigger")
+def trigger_scrape_source(source_id: int, db: Session = Depends(get_db)):
+    try:
+        source = db.query(models.ScrapeSource).filter(models.ScrapeSource.id == source_id).first()
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
+        
+        resp = requests.post(f"{SCRAPER_SERVICE_URL}/api/v1/scraper/trigger/{source_id}", timeout=2.0)
+        if resp.status_code not in (200, 202):
+            raise HTTPException(status_code=resp.status_code, detail=f"Scraper service error: {resp.text}")
+        return {"status": "SUCCESS", "message": f"Crawling triggered for '{source.name}'"}
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=400, detail=f"Failed to trigger crawl: {str(e)}")
 
 # --- LEGACY COMPATIBILITY ROUTING ---
 
@@ -1023,7 +1408,9 @@ def legacy_search_ads(
     ml_service_url = ML_SERVICE_URL
     
     params = {"type": type, "limit": limit}
-    if q: params["q"] = q
+    if q:
+        q = translate_query_if_regional(q)
+        params["q"] = q
     if category: params["category"] = category
     if location: params["location"] = location
         
@@ -1054,7 +1441,8 @@ def legacy_search_ads(
                         "language": page.language if page else "en",
                         "visual_caption": visual.caption if visual else ""
                     })
-            return {"results": enriched}
+            if enriched:
+                return {"results": enriched}
     except Exception:
         pass
         
@@ -1089,6 +1477,8 @@ def legacy_search_ads(
             "language": page.language if page else "en",
             "visual_caption": visual.caption if visual else ""
         })
+    if not results:
+        return {"results": [], "message": "No verified results found"}
     return {"results": results}
 
 @app.post("/api/v1/ads/ask")
@@ -1096,6 +1486,9 @@ def legacy_ask_rag(payload: dict = Body(...), db: Session = Depends(get_db)):
     question = payload.get("question")
     filters = payload.get("filters", {})
     
+    if question:
+        question = translate_query_if_regional(question)
+        
     import requests
     ml_service_url = ML_SERVICE_URL
     try:

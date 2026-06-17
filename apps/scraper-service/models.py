@@ -130,6 +130,8 @@ class ScrapeSource(Base):
     cron_schedule = Column(String(50), default='0 6 * * *')
     language = Column(String(20), default='en')
     is_active = Column(Boolean, default=True)
+    priority = Column(Integer, default=3)
+    is_permanent = Column(Boolean, default=False)
     
     logs = relationship("ScrapeLog", back_populates="source", cascade="all, delete-orphan")
 
@@ -155,3 +157,14 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE scrape_sources ADD COLUMN priority INTEGER DEFAULT 3"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE scrape_sources ADD COLUMN is_permanent BOOLEAN DEFAULT 0"))
+        except Exception:
+            pass
+

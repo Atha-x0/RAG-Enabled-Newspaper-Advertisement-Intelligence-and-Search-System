@@ -37,6 +37,17 @@ class AdIntelRagEngine:
                 self.genai_client = genai.Client(api_key=gemini_key)
                 self.has_gemini = True
                 logger.info("Gemini AI API client configured.")
+                # Dynamically choose available model
+                self.model_name = "gemini-2.0-flash"
+                try:
+                    available_models = [m.name for m in self.genai_client.models.list()]
+                    for m in ['models/gemini-3.5-flash', 'models/gemini-2.0-flash', 'models/gemini-2.5-pro', 'models/gemini-2.5-flash']:
+                        if m in available_models:
+                            self.model_name = m.replace('models/', '')
+                            break
+                    logger.info(f"AdIntelRagEngine: Selected Gemini model: {self.model_name}")
+                except Exception as model_err:
+                    logger.warning(f"Failed to detect available models: {model_err}")
             except Exception as e:
                 self.genai_client = None
                 self.has_gemini = False
@@ -117,8 +128,68 @@ class AdIntelRagEngine:
             logger.error(f"Failed to index ad in Qdrant: {e}")
             return False
 
+    def _translate_query_if_regional(self, q: str) -> str:
+        if not q or not q.strip():
+            return q
+        import re
+        has_devanagari = bool(re.search(r"[\u0900-\u097F]", q))
+        if not has_devanagari:
+            return q
+
+        # Try Gemini translation
+        if self.has_gemini and self.genai_client:
+            try:
+                prompt = (
+                    "Translate the following Indian regional query text into simple English. "
+                    "Do not explain, add comments, or wrap in markdown. Just return the translation.\n\n"
+                    f"=== QUERY ===\n{q}"
+                )
+                response = self.genai_client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt
+                )
+                translated = response.text.strip()
+                if translated:
+                    logger.info(f"AdIntelRagEngine: Translated regional search query '{q}' to '{translated}' using Gemini.")
+                    return translated
+            except Exception as e:
+                logger.warning(f"AdIntelRagEngine: Gemini query translation failed: {e}. Falling back to local dict.")
+                pass
+
+        # Local dictionary fallback
+        import sys
+        _scraper_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../scraper-service"))
+        if _scraper_path not in sys.path:
+            sys.path.insert(0, _scraper_path)
+        try:
+            from ad_classifier import LOCAL_TRANSLATION_MAP
+            text_lower = q.lower()
+            phrases = {
+                "तांब्याची वायर": "copper wire",
+                "तांब्याची केबल": "copper cable",
+                "कॉपर वायर": "copper wire",
+                "कॉपर केबल": "copper cable",
+            }
+            for phrase, eng in phrases.items():
+                text_lower = text_lower.replace(phrase, eng)
+
+            words = text_lower.split()
+            translated_words = []
+            for word in words:
+                clean_word = re.sub(r"[^\w\u0900-\u097F]", "", word)
+                if clean_word in LOCAL_TRANSLATION_MAP:
+                    translated_words.append(LOCAL_TRANSLATION_MAP[clean_word])
+                else:
+                    translated_words.append(word)
+            return " ".join(translated_words)
+        except Exception:
+            pass
+
+        return q
+
     def search_ads(self, query_text, search_type="hybrid", category=None, location=None, limit=5):
         try:
+            query_text = self._translate_query_if_regional(query_text)
             query_vector = self._get_embedding(query_text)
             
             filter_conditions = []
@@ -157,11 +228,12 @@ class AdIntelRagEngine:
 
             results = []
             for hit in search_results:
-                results.append({
-                    "ad_id": hit.payload.get("ad_id"),
-                    "score": float(hit.score),
-                    "payload": hit.payload
-                })
+                if float(hit.score) >= 0.65:
+                    results.append({
+                        "ad_id": hit.payload.get("ad_id"),
+                        "score": float(hit.score),
+                        "payload": hit.payload
+                    })
             
             return results
         except Exception as e:
@@ -201,7 +273,7 @@ class AdIntelRagEngine:
             try:
                 config = types.GenerateContentConfig(response_mime_type="application/json")
                 response = self.genai_client.models.generate_content(
-                    model='gemini-1.5-flash',
+                    model=self.model_name,
                     contents=prompt,
                     config=config
                 )
@@ -257,6 +329,11 @@ class AdIntelRagEngine:
         location = filters.get("location") if filters else None
         
         matches = self.search_ads(question, category=category, location=location, limit=3)
+        if not matches:
+            return {
+                "answer": "No verified results found",
+                "sources": []
+            }
         
         context_blocks = []
         source_ids = []
@@ -287,7 +364,7 @@ class AdIntelRagEngine:
         if self.has_gemini and self.genai_client:
             try:
                 response = self.genai_client.models.generate_content(
-                    model='gemini-1.5-flash',
+                    model=self.model_name,
                     contents=prompt
                 )
                 return {

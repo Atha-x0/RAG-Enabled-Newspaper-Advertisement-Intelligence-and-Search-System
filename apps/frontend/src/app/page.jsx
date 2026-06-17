@@ -13,7 +13,7 @@ import {
   PieChart, Pie, Cell, AreaChart, Area, LineChart, Line, Legend
 } from 'recharts';
 import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api } from '../lib/api';
+import { api, getAutocomplete, getTrending } from '../lib/api';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -43,6 +43,14 @@ function Dashboard() {
   const [appliedQuery, setAppliedQuery] = useState('');
   const [sortBy, setSortBy] = useState('Relevance');
 
+  // Autocomplete state
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [trending, setTrending] = useState([]);
+  const searchInputRef = useRef(null);
+
+
+
   // Sidebar Filter Form State (Local until applied)
   const [localCategory, setLocalCategory] = useState('');
   const [localBrand, setLocalBrand] = useState('');
@@ -61,6 +69,8 @@ function Dashboard() {
   // Detail Modal State
   const [selectedProductId, setSelectedProductId] = useState(null);
   const [showProductModal, setShowProductModal] = useState(false);
+  const [selectedAd, setSelectedAd] = useState(null);
+  const [showAdModal, setShowAdModal] = useState(false);
 
   // Admin edit product modal
   const [editingProduct, setEditingProduct] = useState(null);
@@ -80,6 +90,30 @@ function Dashboard() {
     }, 500);
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  // Autocomplete: fetch suggestions on partial input
+  useEffect(() => {
+    if (searchQuery.length < 2) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await getAutocomplete(searchQuery);
+        setSuggestions(res.data.suggestions || []);
+        setShowSuggestions(true);
+      } catch {
+        setSuggestions([]);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Load trending on mount
+  useEffect(() => {
+    getTrending().then(res => setTrending(res.data || [])).catch(() => {});
+  }, []);
 
   // Dynamic Lookup Queries for filters
   const { data: categories = [] } = useQuery({
@@ -108,60 +142,85 @@ function Dashboard() {
 
   // Main Products Search & Filter query
   const { 
-    data: products = [], 
+    data: searchData = { results: [], web_results: [], all_results: [], search_meta: {} }, 
     isLoading: isProductsLoading, 
     isError: isProductsError, 
     refetch: refetchProducts 
   } = useQuery({
     queryKey: ['products', appliedQuery, appliedCategory, appliedBrand, appliedLocation, appliedPrice, sortBy],
     queryFn: async () => {
-      // If we have a query, use /search. Otherwise use /products.
+      // If we have a query, use /search (includes web). Otherwise use /products.
       const url = appliedQuery ? "/search" : "/products";
       const res = await api.get(url, {
         params: {
           q: appliedQuery || undefined,
           brand: appliedBrand || undefined,
-          category: appliedCategory || undefined
+          category: appliedCategory || undefined,
+          location: appliedLocation || undefined,
+          include_web: true,
         }
       });
 
-      let results = [];
-      if (res.data && typeof res.data === 'object' && Array.isArray(res.data.results)) {
-        results = res.data.results;
-      } else {
-        results = Array.isArray(res.data) ? res.data : [];
+      // Handle unified search response (has results + web_results)
+      if (res.data && typeof res.data === 'object' && !Array.isArray(res.data)) {
+        let localResults = res.data.results || [];
+        let webResults = res.data.web_results || [];
+        let allResults = res.data.all_results || [...localResults, ...webResults];
+
+        // If plain /products endpoint (array response)
+        if (Array.isArray(res.data)) {
+          localResults = res.data;
+          allResults = res.data;
+        }
+
+        // Filter by location (local filter for local results)
+        if (appliedLocation) {
+          localResults = localResults.filter(p => {
+            return p.offers && p.offers.some(o =>
+              o.dealer_location && o.dealer_location.toLowerCase().includes(appliedLocation.toLowerCase())
+            );
+          });
+        }
+
+        // Filter by price
+        if (appliedPrice < 100000) {
+          localResults = localResults.filter(p => !p.min_price || p.min_price <= appliedPrice);
+        }
+
+        // Sort local results
+        if (sortBy === 'Price Low to High') {
+          localResults.sort((a, b) => (a.min_price || 0) - (b.min_price || 0));
+        } else if (sortBy === 'Price High to Low') {
+          localResults.sort((a, b) => (b.min_price || 0) - (a.min_price || 0));
+        } else if (sortBy === 'Delivery Time') {
+          localResults.sort((a, b) => {
+            const aDays = a.offers?.length ? Math.min(...a.offers.map(o => o.delivery_time_days || 3)) : 3;
+            const bDays = b.offers?.length ? Math.min(...b.offers.map(o => o.delivery_time_days || 3)) : 3;
+            return aDays - bDays;
+          });
+        } else if (sortBy === 'Newest') {
+          localResults.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
+        }
+
+        // Sort web results by relevance_score then source_priority
+        webResults.sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0) || (a.source_priority || 4) - (b.source_priority || 4));
+
+        return {
+          results: localResults,
+          web_results: webResults,
+          search_meta: res.data.search_meta || {},
+        };
       }
 
-      // Filter by location dynamically in frontend since backend /products and /search filter by brand/category/query but location is inside offers!
-      if (appliedLocation) {
-        results = results.filter(p => {
-          return p.offers && p.offers.some(o => o.dealer_location && o.dealer_location.toLowerCase().includes(appliedLocation.toLowerCase()));
-        });
-      }
-
-      // Filter by price (min_price <= appliedPrice)
-      if (appliedPrice < 100000) {
-        results = results.filter(p => p.min_price <= appliedPrice);
-      }
-
-      // Sorting
-      if (sortBy === 'Price Low to High') {
-        results.sort((a, b) => (a.min_price || 0) - (b.min_price || 0));
-      } else if (sortBy === 'Price High to Low') {
-        results.sort((a, b) => (b.min_price || 0) - (a.min_price || 0));
-      } else if (sortBy === 'Delivery Time') {
-        results.sort((a, b) => {
-          const aDays = a.offers?.length ? Math.min(...a.offers.map(o => o.delivery_time_days || 3)) : 3;
-          const bDays = b.offers?.length ? Math.min(...b.offers.map(o => o.delivery_time_days || 3)) : 3;
-          return aDays - bDays;
-        });
-      } else if (sortBy === 'Newest') {
-        results.sort((a, b) => b.id.localeCompare(a.id));
-      }
-
-      return results;
+      // Plain array from /products
+      const results = Array.isArray(res.data) ? res.data : [];
+      return { results, web_results: [], search_meta: {} };
     }
   });
+
+  const products = searchData.results || [];
+  const webResults = searchData.web_results || [];
+  const searchMeta = searchData.search_meta || {};
 
   const handleApplyFilters = () => {
     setAppliedCategory(localCategory);
@@ -366,15 +425,34 @@ function Dashboard() {
                 <div className="relative flex-1">
                   <Search className="absolute left-4 top-3.5 h-5 w-5 text-slate-400" />
                   <input
+                    ref={searchInputRef}
                     type="text"
-                    placeholder="Search industrial products..."
+                    placeholder="Search products, ads, dealers... e.g. 'Havells MCB 32A' or '3mm wire'"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
+                    onFocus={() => searchQuery.length >= 2 && setShowSuggestions(true)}
+                    onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { setAppliedQuery(searchQuery); setShowSuggestions(false); } }}
                     className="w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-smooth"
                   />
+                  {/* Autocomplete Dropdown */}
+                  {showSuggestions && suggestions.length > 0 && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-lg z-50 overflow-hidden">
+                      {suggestions.map((s, i) => (
+                        <button
+                          key={i}
+                          onMouseDown={() => { setSearchQuery(s); setAppliedQuery(s); setShowSuggestions(false); }}
+                          className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-blue-50 hover:text-blue-700 flex items-center space-x-2 border-b border-slate-50 last:border-0"
+                        >
+                          <Search className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                          <span>{s}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <button
-                  onClick={() => setAppliedQuery(searchQuery)}
+                  onClick={() => { setAppliedQuery(searchQuery); setShowSuggestions(false); }}
                   className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-full shadow-sm flex items-center space-x-2 transition-smooth"
                 >
                   <Search className="h-4 w-4" />
@@ -449,10 +527,18 @@ function Dashboard() {
 
               {/* Title & Sorting Toolbar */}
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                <h3 className="text-xl font-bold text-slate-900">
-                  Available Industrial Products ({products.length} {products.length === 1 ? 'item' : 'items'} cataloged)
-                </h3>
-                <div className="flex items-center space-x-2 shrink-0">
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900">
+                    Available Industrial Products ({products.length} {products.length === 1 ? 'item' : 'items'} cataloged)
+                  </h3>
+                  {appliedQuery && searchMeta.inferred_category && (
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Detected: <span className="font-semibold text-blue-600">{searchMeta.inferred_category}</span>
+                      {searchMeta.inferred_location && <> · Location: <span className="font-semibold text-blue-600">{searchMeta.inferred_location}</span></>}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center space-x-3 shrink-0">
                   <span className="text-sm text-slate-500 font-medium">Sort by:</span>
                   <div className="relative">
                     <select
@@ -518,6 +604,25 @@ function Dashboard() {
                   ))}
                 </div>
               )}
+
+              {/* Web / Newspaper Scraped Results Section */}
+              {webResults.length > 0 && (
+                <div className="space-y-4 mt-2">
+                  <div className="flex items-center space-x-3 pt-2 border-t border-slate-200">
+                    <Globe className="h-5 w-5 text-emerald-600" />
+                    <h3 className="text-lg font-bold text-slate-900">
+                      Live Web Results
+                      <span className="ml-2 text-xs font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">Real-Time</span>
+                    </h3>
+                    <span className="text-sm text-slate-500">— {webResults.length} results from newspapers, dealers & manufacturers</span>
+                  </div>
+                  <div className="space-y-4">
+                    {webResults.map((r) => (
+                        <WebResultCard key={r.id} result={r} onViewDetails={(ad) => { setSelectedAd(ad); setShowAdModal(true); }} />
+                      ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -566,6 +671,49 @@ function Dashboard() {
           productId={selectedProductId}
           onClose={() => { setShowProductModal(false); setSelectedProductId(null); }}
         />
+      )}
+
+      {/* Ad Details Modal */}
+      {showAdModal && selectedAd && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => { setShowAdModal(false); setSelectedAd(null); }}
+        >
+          <div className="bg-white rounded-xl max-w-3xl w-full p-6 overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-start">
+              <h2 className="text-2xl font-bold text-slate-900">{selectedAd.title}</h2>
+              <button onClick={() => { setShowAdModal(false); setSelectedAd(null); }} className="text-slate-500 hover:text-slate-700">✕</button>
+            </div>
+            <div className="mt-4">
+              {/* Image */}
+              {selectedAd.image_url && (
+                <img src={selectedAd.image_url} alt="Ad image" className="w-full max-h-64 object-cover rounded-md" />
+              )}
+              {/* Metadata */}
+              <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
+                <div><strong>Source:</strong> {selectedAd.source_name}</div>
+                <div><strong>Publication Date:</strong> {selectedAd.publication_date}</div>
+                <div><strong>Price:</strong> {selectedAd.price_text || (selectedAd.price ? `${selectedAd.currency || 'INR'} ${selectedAd.price}` : 'Not Available')}</div>
+                <div><strong>Dealer:</strong> {selectedAd.dealer_name}</div>
+                <div><strong>Contact:</strong> {selectedAd.contact_phone || selectedAd.contact_email || selectedAd.contact_website}</div>
+                <div><strong>Verification:</strong> {selectedAd.source_type === 'newspaper_ad' ? '✅ Verified' : '❓ Unverified'}</div>
+              </div>
+              {/* Description */}
+              {selectedAd.description && (
+                <p className="mt-4 text-slate-700">{selectedAd.description}</p>
+              )}
+              {/* Specifications */}
+              {selectedAd.specifications && Object.keys(selectedAd.specifications).length > 0 && (
+                <div className="mt-4">
+                  <h3 className="font-semibold">Specifications</h3>
+                  <ul className="list-disc list-inside">
+                    {Object.entries(selectedAd.specifications).map(([k,v]) => (
+                      <li key={k}><strong>{k}:</strong> {v}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 4. Edit Product Modal */}
@@ -694,11 +842,19 @@ function ProductCard({ product, onViewDetails, onToggleCompare, inCompareList })
         <div className="space-y-1">
           <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Cheapest Deal Starts At</span>
           <div className="flex items-baseline space-x-1">
-            <span className="text-3xl font-extrabold text-slate-900 font-mono leading-none">
-              ₹{product.min_price > 0 ? product.min_price.toLocaleString() : '13,800'}
-            </span>
+            {product.min_price > 0 ? (
+              <span className="text-3xl font-extrabold text-slate-900 font-mono leading-none">
+                ₹{product.min_price.toLocaleString()}
+              </span>
+            ) : (
+              <span className="text-sm font-bold text-slate-500 leading-none">
+                Price: Not Available
+              </span>
+            )}
           </div>
-          <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Excl. GST</span>
+          {product.min_price > 0 && (
+            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Excl. GST</span>
+          )}
         </div>
 
         <div className="space-y-2 mt-4 lg:mt-0">
@@ -718,6 +874,123 @@ function ProductCard({ product, onViewDetails, onToggleCompare, inCompareList })
             {inCompareList ? 'Compared' : 'Compare'}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// WebResultCard — displays real-time scraped results from newspapers/dealers/manufacturers
+function WebResultCard({ result, onViewDetails }) {
+  const sourcePriorityConfig = {
+    1: { label: 'Newspaper Ad', color: 'bg-orange-50 border-orange-200 text-orange-700', dot: 'bg-orange-500' },
+    2: { label: 'Dealer Website', color: 'bg-blue-50 border-blue-200 text-blue-700', dot: 'bg-blue-500' },
+    3: { label: 'Manufacturer', color: 'bg-purple-50 border-purple-200 text-purple-700', dot: 'bg-purple-500' },
+    4: { label: 'Directory', color: 'bg-slate-100 border-slate-200 text-slate-600', dot: 'bg-slate-400' },
+  };
+  const cfg = sourcePriorityConfig[result.source_priority] || sourcePriorityConfig[4];
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-[20px] p-5 shadow-sm hover:shadow-md transition-smooth">
+      <div className="flex flex-col md:flex-row gap-4">
+        {/* Left: content */}
+        <div className="flex-1 space-y-2">
+          {/* Source badge + priority */}
+          <div className="flex items-center space-x-2 flex-wrap gap-y-1">
+            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${cfg.color}`}>
+              <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${cfg.dot}`}></span>
+              {cfg.label}
+            </span>
+            <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+              {result.source_name}
+            </span>
+            {result.publication_date && (
+              <span className="flex items-center text-[10px] text-slate-400 font-medium">
+                <Calendar className="h-3 w-3 mr-1" />
+                {result.publication_date}
+              </span>
+            )}
+            {result.relevance_score > 0 && (
+              <span className="text-[10px] text-slate-400 font-mono">
+                {Math.round(result.relevance_score * 100)}% match
+              </span>
+            )}
+          </div>
+
+          {/* Title */}
+          <button className="text-left text-base font-bold text-slate-900 leading-snug hover:underline" onClick={() => onViewDetails && onViewDetails(result)}>{result.title || 'Advertisement / Product Listing'}</button>
+
+          {/* Category + Brand */}
+          {(result.category || result.brand) && (
+            <div className="flex items-center space-x-2 text-xs text-slate-500">
+              {result.category && <span className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded font-semibold">{result.category}</span>}
+              {result.brand && <span className="font-semibold text-slate-700">Brand: {result.brand}</span>}
+            </div>
+          )}
+
+          {/* Description */}
+          {result.description && (
+            <p className="text-sm text-slate-600 line-clamp-3 leading-relaxed">{result.description}</p>
+          )}
+
+          {/* Specifications */}
+          {result.specifications && Object.keys(result.specifications).length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(result.specifications).slice(0, 4).map(([k, v]) => (
+                <span key={k} className="bg-slate-50 border border-slate-200 text-slate-600 text-[10px] font-semibold px-2 py-0.5 rounded font-mono">
+                  {k}: {v}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 pt-1">
+  {(result.dealer_name || result.dealer_address || result.contact_phone || result.contact_email) ? (
+    <>
+      {result.dealer_name && (<span className="font-semibold text-slate-800">{result.dealer_name}</span>)}
+      {result.dealer_address && (
+        <span className="flex items-center text-slate-500">
+          <MapPin className="h-3 w-3 mr-1 text-slate-400" />{result.dealer_address.substring(0, 60)}
+        </span>
+      )}
+      {result.contact_phone && (
+        <span className="flex items-center text-slate-600 font-medium">
+          <Phone className="h-3 w-3 mr-1 text-blue-500" />{result.contact_phone}
+        </span>
+      )}
+      {result.contact_email && (<span className="text-blue-600">{result.contact_email}</span>)}
+    </>
+  ) : (
+    <span className="text-sm text-slate-600">Contact Information: Not Available</span>
+  )}
+</div>
+        </div>
+
+        {/* Right: price + link */}
+        <div className="shrink-0 flex flex-col items-end justify-between min-w-[140px]">
+          {(result.price_text || result.price) ? (
+            <div className="text-right">
+              <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">Price</span>
+              <span className="text-base font-bold text-slate-800">
+                {result.price_text || `${result.currency || 'INR'} ${result.price}`}
+              </span>
+            </div>
+          ) : (
+            <div className="text-right">
+              <span className="text-sm font-bold text-slate-500">Price: Not Available</span>
+            </div>
+          )}
+          {/* Removed external redirect buttons */}
+        </div>
+      </div>
+
+      {/* Footer: scraped timestamp */}
+      <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
+        <span className="text-[9px] text-slate-400 font-medium">
+          Fetched live · {result.scraped_at ? new Date(result.scraped_at).toLocaleString() : 'Just now'}
+        </span>
+        <span className="text-[9px] text-slate-400 font-mono truncate max-w-[240px]" title={result.source_url}>
+          {result.source_url}
+        </span>
       </div>
     </div>
   );
@@ -1169,11 +1442,216 @@ function AIAssistantPage({ onViewDetails }) {
   );
 }
 
+// SourceModal Sub-component for Scrape Sources
+function SourceModal({ source, onClose, onSave }) {
+  const [name, setName] = useState(source?.name || '');
+  const [crawlingUrl, setCrawlingUrl] = useState(source?.crawling_url || '');
+  const [sourceType, setSourceType] = useState(source?.source_type || 'epaper_pdf');
+  const [cronSchedule, setCronSchedule] = useState(source?.cron_schedule || '0 6 * * *');
+  const [language, setLanguage] = useState(source?.language || 'en');
+  const [isActive, setIsActive] = useState(source ? source.is_active : true);
+  const [priority, setPriority] = useState(source?.priority || 3);
+  const [isPermanent, setIsPermanent] = useState(source?.is_permanent || false);
+  // New fields
+  const [region, setRegion] = useState(source?.region || '');
+  const [verificationStatus, setVerificationStatus] = useState(source?.verification_status || 'PENDING');
+  const [lastCrawlTime, setLastCrawlTime] = useState(source?.last_crawl_time ? new Date(source.last_crawl_time).toLocaleString() : '');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSave({
+      name,
+      crawling_url: crawlingUrl,
+      region,
+      verification_status: verificationStatus,
+      source_type: sourceType,
+      cron_schedule: cronSchedule,
+      language,
+      is_active: isActive,
+      priority: parseInt(priority),
+      is_permanent: isPermanent
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 flex flex-col space-y-4 max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+          <h3 className="text-lg font-bold text-slate-900">{source ? 'Edit Scrape Source' : 'Add Scrape Source'}</h3>
+          <button onClick={onClose} className="p-1.5 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-650 transition-colors">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+          <div className="space-y-1">
+            <label className="font-bold text-slate-700">Source Name *</label>
+            <input 
+              type="text" 
+              required 
+              value={name} 
+              onChange={e => setName(e.target.value)} 
+              placeholder="e.g. Maharashtra Daily Classifieds" 
+              className="w-full border border-slate-200 rounded-xl px-3.5 py-2 text-slate-800 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="font-bold text-slate-700">Crawl Target URL *</label>
+            <input 
+              type="url" 
+              required 
+              value={crawlingUrl} 
+              onChange={e => setCrawlingUrl(e.target.value)} 
+              placeholder="e.g. http://epaper.maharashtranews.com/pdf" 
+              className="w-full border border-slate-200 rounded-xl px-3.5 py-2 text-slate-800 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="font-bold text-slate-700">Source Type</label>
+              <select 
+                value={sourceType} 
+                onChange={e => setSourceType(e.target.value)} 
+                className="w-full border border-slate-200 rounded-xl px-3.5 py-2 text-slate-800 focus:outline-none focus:border-blue-500"
+              >
+                <option value="epaper_pdf">Newspaper PDF (epaper_pdf)</option>
+                <option value="indiamart">IndiaMART Supplier Catalog (indiamart)</option>
+                <option value="justdial">Justdial Business Directory (justdial)</option>
+                <option value="website_catalog">Manufacturer Catalog (website_catalog)</option>
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="font-bold text-slate-700">Source Priority</label>
+              <select 
+                value={priority} 
+                onChange={e => setPriority(e.target.value)} 
+                className="w-full border border-slate-200 rounded-xl px-3.5 py-2 text-slate-800 focus:outline-none focus:border-blue-500"
+              >
+                <option value="1">1 - Newspaper Ad (Highest)</option>
+                <option value="2">2 - Dealer Website</option>
+                <option value="3">3 - Manufacturer Website</option>
+                <option value="4">4 - Business Directory (Lowest)</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="font-bold text-slate-700">Cron Schedule</label>
+              <input 
+                type="text" 
+                required 
+                value={cronSchedule} 
+                onChange={e => setCronSchedule(e.target.value)} 
+                placeholder="e.g. 0 6 * * *" 
+                className="w-full border border-slate-200 rounded-xl px-3.5 py-2 text-slate-800 font-mono focus:outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="font-bold text-slate-700">Language</label>
+              <input 
+                type="text" 
+                required 
+                value={language} 
+                onChange={e => setLanguage(e.target.value)} 
+                placeholder="e.g. en, hi, mr" 
+                className="w-full border border-slate-200 rounded-xl px-3.5 py-2 text-slate-800 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+          </div>
+          
+          <div className="space-y-1">
+            <label className="font-bold text-slate-700 mt-2">Region</label>
+            <input 
+              type="text" 
+              value={region} 
+              onChange={e => setRegion(e.target.value)} 
+              placeholder="e.g. Maharashtra" 
+              className="w-full border border-slate-200 rounded-xl px-3.5 py-2 text-slate-800 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="font-bold text-slate-700 mt-2">Verification Status</label>
+            <select 
+              value={verificationStatus} 
+              onChange={e => setVerificationStatus(e.target.value)} 
+              className="w-full border border-slate-200 rounded-xl px-3.5 py-2 text-slate-800 focus:outline-none focus:border-blue-500"
+            >
+              <option value="PENDING">PENDING</option>
+              <option value="VERIFIED">VERIFIED</option>
+              <option value="REJECTED">REJECTED</option>
+            </select>
+          </div>
+
+          {source && (
+            <div className="mt-2 space-y-1">
+              <label className="font-bold text-slate-700">Last Crawl Time</label>
+              <input 
+                type="text" 
+                readOnly 
+                value={lastCrawlTime} 
+                className="w-full border border-slate-200 rounded-xl px-3.5 py-2 text-slate-500 bg-slate-100 cursor-not-allowed"
+              />
+            </div>
+          )}
+
+          <div className="flex items-center space-x-6 pt-2">
+            <label className="flex items-center space-x-2 font-semibold text-slate-700 cursor-pointer">
+              <input 
+                type="checkbox" 
+                checked={isActive} 
+                onChange={e => setIsActive(e.target.checked)} 
+                className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4 border-slate-300"
+              />
+              <span>Active (Enabled)</span>
+            </label>
+
+            <label className="flex items-center space-x-2 font-semibold text-slate-700 cursor-pointer">
+              <input 
+                type="checkbox" 
+                checked={isPermanent} 
+                onChange={e => setIsPermanent(e.target.checked)} 
+                className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4 border-slate-300"
+              />
+              <span>Permanently Register Source</span>
+            </label>
+          </div>
+
+          <div className="flex justify-end space-x-2 pt-4 border-t border-slate-100">
+            <button 
+              type="button" 
+              onClick={onClose} 
+              className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-700 font-bold rounded-xl transition-smooth"
+            >
+              Cancel
+            </button>
+            <button 
+              type="submit" 
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm transition-smooth"
+            >
+              {source ? 'Save Changes' : 'Create Source'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // AdminConsole Sub-component
 function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
   const queryClient = useQueryClient();
   const [adminTab, setAdminTab] = useState('products'); // 'products', 'dealers', 'sources', 'logs'
   const [isReindexing, setIsReindexing] = useState(false);
+  
+  // Scraper source management states
+  const [showAddSourceModal, setShowAddSourceModal] = useState(false);
+  const [editingSource, setEditingSource] = useState(null);
 
   // Products List
   const { data: products = [], refetch: refetchProducts } = useQuery({
@@ -1202,15 +1680,6 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
     }
   });
 
-  // Separate Logs Endpoint query
-  const { data: scrapeLogs = [] } = useQuery({
-    queryKey: ['adminLogs'],
-    queryFn: async () => {
-      const res = await api.get('/logs');
-      return res.data;
-    }
-  });
-
   const handleReindex = async () => {
     setIsReindexing(true);
     try {
@@ -1221,6 +1690,48 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
       alert("Reindex failed. Check connection.");
     } finally {
       setIsReindexing(false);
+    }
+  };
+
+  const handleToggleActive = async (sourceId) => {
+    try {
+      await api.post(`/sources/${sourceId}/toggle`);
+      refetchSources();
+    } catch (e) {
+      alert("Failed to toggle source status.");
+    }
+  };
+
+  const handleTriggerScrape = async (sourceId) => {
+    try {
+      const res = await api.post(`/sources/${sourceId}/trigger`);
+      alert(res.data.message || "Scrape triggered successfully on background crawlers!");
+      refetchSources();
+    } catch (e) {
+      alert("Failed to trigger scrape. Check connection to scraper microservice.");
+    }
+  };
+
+  const handleDeleteSource = async (source) => {
+    const isPermanent = source.is_permanent;
+    let bypass = false;
+    
+    if (isPermanent) {
+      if (!confirm("WARNING: This is a permanently registered source. Deleting it requires permanent bypass confirmation. Are you sure you want to permanently delete this seed?")) {
+        return;
+      }
+      bypass = true;
+    } else {
+      if (!confirm(`Are you sure you want to delete the crawl seed: ${source.name}?`)) {
+        return;
+      }
+    }
+
+    try {
+      await api.delete(`/sources/${source.id}`, { params: { bypass_permanent: bypass } });
+      refetchSources();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Failed to delete source.");
     }
   };
 
@@ -1255,6 +1766,15 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
             >
               <Plus className="h-4 w-4 mr-1.5" />
               Add Product
+            </button>
+          )}
+          {adminTab === 'sources' && (
+            <button
+              onClick={() => setShowAddSourceModal(true)}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-sm transition-smooth flex items-center"
+            >
+              <Plus className="h-4 w-4 mr-1.5" />
+              Add Source
             </button>
           )}
           <button
@@ -1358,30 +1878,77 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
                 <th className="pb-3">Source Name</th>
                 <th className="pb-3">Crawl URL</th>
                 <th className="pb-3">Type</th>
+                <th className="pb-3">Region</th>
+                <th className="pb-3">Verification</th>
+                <th className="pb-3">Last Crawl</th>
+                <th className="pb-3">Priority</th>
                 <th className="pb-3">Cron Schedule</th>
+                <th className="pb-3">Status</th>
                 <th className="pb-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {(scrapersData.sources || []).map((s) => (
                 <tr key={s.id} className="hover:bg-slate-50/50">
-                  <td className="py-4 font-semibold text-slate-800">{s.name}</td>
+                  <td className="py-4 font-semibold text-slate-800 flex items-center gap-2">
+                    {s.name}
+                    {s.is_permanent && (
+                      <span className="bg-slate-100 text-slate-700 border border-slate-200 font-bold text-[8px] px-1.5 py-0.5 rounded-full">
+                        Permanent
+                      </span>
+                    )}
+                  </td>
                   <td className="py-4 font-mono text-slate-500 truncate max-w-[200px]" title={s.crawling_url}>{s.crawling_url}</td>
                   <td className="py-4">
                     <span className="bg-blue-50 text-blue-600 border border-blue-100 font-bold text-[9px] uppercase px-2 py-0.5 rounded">
                       {s.source_type}
                     </span>
                   </td>
+                  <td className="py-4">{s.region || ''}</td>
+                  <td className="py-4">{s.verification_status || ''}</td>
+                  <td className="py-4">{s.last_crawl_time ? new Date(s.last_crawl_time).toLocaleString() : ''}</td>
+                  <td className="py-4 font-semibold text-slate-700">
+                    {{
+                      1: '1 - Newspaper',
+                      2: '2 - Dealer',
+                      3: '3 - Manufacturer',
+                      4: '4 - Directory'
+                    }[s.priority] || s.priority || '3 - Manufacturer'}
+                  </td>
                   <td className="py-4 font-mono text-slate-500">{s.cron_schedule}</td>
-                  <td className="py-4 text-right">
+                  <td className="py-4">
                     <button
-                      onClick={async () => {
-                        alert("Scrape triggered on background crawlers!");
-                      }}
-                      className="bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white border border-blue-100 font-bold text-[10px] px-3 py-1.5 rounded-lg transition-smooth"
+                      onClick={() => handleToggleActive(s.id)}
+                      className={`font-bold text-[10px] px-2.5 py-1 rounded-full transition-smooth border ${
+                        s.is_active
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                          : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'
+                      }`}
                     >
-                      Trigger Scrape
+                      {s.is_active ? 'Active' : 'Disabled'}
                     </button>
+                  </td>
+                  <td className="py-4 text-right">
+                    <div className="flex justify-end items-center space-x-2">
+                      <button
+                        onClick={() => handleTriggerScrape(s.id)}
+                        className="bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white border border-blue-100 font-bold text-[10px] px-2.5 py-1.5 rounded-xl transition-smooth"
+                      >
+                        Trigger Scrape
+                      </button>
+                      <button
+                        onClick={() => setEditingSource(s)}
+                        className="p-1.5 text-slate-500 hover:text-blue-650 rounded-lg hover:bg-slate-100 transition-colors"
+                      >
+                        <Edit3 className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteSource(s)}
+                        className="p-1.5 text-slate-450 hover:text-red-650 rounded-lg hover:bg-slate-100 transition-colors"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -1402,7 +1969,7 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {scrapeLogs.map((log) => (
+              {(scrapersData.logs || []).map((log) => (
                 <tr key={log.id} className="hover:bg-slate-50/50">
                   <td className="py-3 text-slate-500 font-mono text-[10px]">
                     {log.downloaded_at ? new Date(log.downloaded_at).toLocaleString() : 'N/A'}
@@ -1422,6 +1989,39 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
         )}
 
       </div>
+
+      {/* Add Source Modal */}
+      {showAddSourceModal && (
+        <SourceModal 
+          onClose={() => setShowAddSourceModal(false)}
+          onSave={async (sourceData) => {
+            try {
+              await api.post('/sources', sourceData);
+              setShowAddSourceModal(false);
+              refetchSources();
+            } catch (e) {
+              alert("Failed to create source. Check connection.");
+            }
+          }}
+        />
+      )}
+
+      {/* Edit Source Modal */}
+      {editingSource && (
+        <SourceModal 
+          source={editingSource}
+          onClose={() => setEditingSource(null)}
+          onSave={async (sourceData) => {
+            try {
+              await api.put(`/sources/${editingSource.id}`, sourceData);
+              setEditingSource(null);
+              refetchSources();
+            } catch (e) {
+              alert("Failed to update source. Check connection.");
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1708,13 +2308,13 @@ function ProductDetailsModal({ productId, onClose }) {
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-y-1 gap-x-4 text-[11px] text-slate-500 font-medium">
                         <div>Shop: <span className="text-slate-700">{offer.dealer.shop_name}</span></div>
                         <div className="flex items-center"><Clock className="h-3 w-3 mr-1 text-slate-400" /> Delivery: <span className="text-slate-700 font-semibold">{offer.delivery_time_days} days</span></div>
-                        <div className="truncate">Web: <a href={offer.dealer.website_url} target="_blank" className="text-blue-600 hover:underline">{offer.dealer.website_url ? 'Catalog' : 'N/A'}</a></div>
+                        <div className="truncate">Web: <span className="text-slate-700">{offer.dealer.website_url || 'N/A'}</span></div>
                         <div className="truncate">Email: <span className="text-slate-700">{offer.dealer.email || 'N/A'}</span></div>
                       </div>
 
                       <div className="flex items-center space-x-4 text-[11px] font-semibold text-slate-700 pt-1">
                         <span className="flex items-center"><Phone className="h-3.5 w-3.5 text-blue-600 mr-1.5" />{offer.dealer.phone || 'N/A'}</span>
-                        {offer.dealer.whatsapp && <a href={`https://wa.me/${offer.dealer.whatsapp.replace(/[^0-9]/g, '')}`} target="_blank" className="text-emerald-600 hover:underline">WhatsApp Link</a>}
+                        {offer.dealer.whatsapp && <span>WhatsApp: {offer.dealer.whatsapp}</span>}
                       </div>
                     </div>
 

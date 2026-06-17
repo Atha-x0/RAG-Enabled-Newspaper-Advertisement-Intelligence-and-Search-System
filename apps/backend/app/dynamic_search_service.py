@@ -26,6 +26,19 @@ class DynamicSearchService:
     def __init__(self, chroma_service: ChromaService):
         self.chroma = chroma_service
 
+    def _get_model_name(self) -> str:
+        model_name = "gemini-2.0-flash"
+        if self.chroma.has_gemini and self.chroma.genai_client:
+            try:
+                available_models = [m.name for m in self.chroma.genai_client.models.list()]
+                for m in ['models/gemini-3.5-flash', 'models/gemini-2.0-flash', 'models/gemini-2.5-pro']:
+                    if m in available_models:
+                        model_name = m.replace('models/', '')
+                        break
+            except Exception:
+                pass
+        return model_name
+
     def search_product(self, db: Session, query: str) -> list:
         query_lower = query.lower()
         
@@ -50,7 +63,7 @@ class DynamicSearchService:
                 Search the web for the real industrial product matching the query: '{query}'.
                 Find real details about this product: brand, manufacturer model number, specifications, category, and a description.
                 Also, search for real dealers/suppliers in India (like on IndiaMART, Justdial, or direct dealer websites) that sell this product or similar items. Find their real name, shop name, office address, city, state, pin code, phone, WhatsApp number, email, and website.
-                For each dealer, find their pricing for this product (or a realistic market price if not listed), currency (INR), shipping charges, and delivery timeline.
+                For each dealer, find their pricing for this product ONLY if explicitly listed on the page. Never estimate, generate, or infer prices. Preserve the original currency exactly as published (e.g., INR, USD, EUR). If no price is listed, set the price and currency to null.
 
                 Return the result as a raw JSON object matching the following structure. Do not output markdown code blocks (like ```json). Just return the raw JSON.
                 {{
@@ -82,7 +95,8 @@ class DynamicSearchService:
                       "email": "Dealer Email",
                       "website_url": "Dealer Website URL",
                       "rating": 4.5,
-                      "price": 12500.0,
+                      "price": null, // Float representing numeric price, ONLY if explicitly listed. Never estimate or use fallback defaults.
+                      "currency": null, // String representing currency (e.g. 'INR', 'USD', 'EUR') ONLY if explicitly listed.
                       "discount": 5.0,
                       "shipping_charges": 500.0,
                       "delivery_time_days": 3,
@@ -96,7 +110,7 @@ class DynamicSearchService:
                 
                 logger.info(f"DynamicSearchService: Launching search grounding request for: {query}")
                 response = self.chroma.genai_client.models.generate_content(
-                    model='gemini-1.5-flash',
+                    model=self._get_model_name(),
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -168,22 +182,27 @@ class DynamicSearchService:
                             logger.info(f"Created real dealer registry: {dealer.name}")
                             
                         # Add price offer listing
-                        price_listing = models.ProductPrice(
-                            id=str(uuid.uuid4()),
-                            product_id=product.id,
-                            dealer_id=dealer.id,
-                            price=float(dl.get("price") or 12500.0),
-                            discount=float(dl.get("discount") or 0.0),
-                            currency=dl.get("currency") or "INR",
-                            offer_validity=dl.get("offer_validity") or "2026-07-31",
-                            shipping_charges=float(dl.get("shipping_charges") or 0.0),
-                            delivery_time_days=int(dl.get("delivery_time_days") or 3),
-                            dispatch_details=dl.get("dispatch_details") or "Immediate dispatch",
-                            source_type=dl.get("source_type") or "website",
-                            source_url=dl.get("source_url") or "http://generative-search-grounding.org"
-                        )
-                        db.add(price_listing)
-                        db.commit()
+                        if dl.get("price") is not None and str(dl.get("price")).strip() != "":
+                            try:
+                                price_val = float(dl["price"])
+                                price_listing = models.ProductPrice(
+                                    id=str(uuid.uuid4()),
+                                    product_id=product.id,
+                                    dealer_id=dealer.id,
+                                    price=price_val,
+                                    discount=float(dl.get("discount") or 0.0),
+                                    currency=dl.get("currency") or "INR",
+                                    offer_validity=dl.get("offer_validity") or "2026-07-31",
+                                    shipping_charges=float(dl.get("shipping_charges") or 0.0),
+                                    delivery_time_days=int(dl.get("delivery_time_days") or 3),
+                                    dispatch_details=dl.get("dispatch_details") or "Immediate dispatch",
+                                    source_type=dl.get("source_type") or "website",
+                                    source_url=dl.get("source_url") or "http://generative-search-grounding.org"
+                                )
+                                db.add(price_listing)
+                                db.commit()
+                            except (ValueError, TypeError) as val_err:
+                                logger.warning(f"Skipping price listing due to conversion error: {val_err}")
                         
                     # Index in ChromaDB
                     composite_text = f"Product Name: {product.name} | Brand: {product.brand} | Model: {product.model_number} | Category: {product.category} | Description: {product.description}"

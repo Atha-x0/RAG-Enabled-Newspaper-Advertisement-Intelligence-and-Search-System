@@ -33,6 +33,8 @@ class SourceCreate(BaseModel):
     cron_schedule: str = Field("0 6 * * *", example="0 6 * * *")
     language: str = Field("en", example="en")
     is_active: bool = Field(True, example=True)
+    priority: Optional[int] = Field(3, example=3)
+    is_permanent: Optional[bool] = Field(False, example=False)
 
 class SourceResponse(SourceCreate):
     id: int
@@ -94,7 +96,9 @@ def create_source(source_data: SourceCreate):
             source_type=source_data.source_type,
             cron_schedule=source_data.cron_schedule,
             language=source_data.language,
-            is_active=source_data.is_active
+            is_active=source_data.is_active,
+            priority=source_data.priority,
+            is_permanent=source_data.is_permanent
         )
         db.add(source)
         db.commit()
@@ -112,13 +116,57 @@ def create_source(source_data: SourceCreate):
     finally:
         db.close()
 
-@app.delete("/api/v1/scraper/sources/{source_id}", status_code=204)
-def delete_source(source_id: int):
+@app.put("/api/v1/scraper/sources/{source_id}", response_model=SourceResponse)
+def update_source(source_id: int, source_data: SourceCreate):
     db = SessionLocal()
     try:
         source = db.query(ScrapeSource).filter(ScrapeSource.id == source_id).first()
         if not source:
             raise HTTPException(status_code=404, detail="Scrape source not found")
+        
+        source.name = source_data.name
+        source.crawling_url = source_data.crawling_url
+        source.source_type = source_data.source_type
+        source.cron_schedule = source_data.cron_schedule
+        source.language = source_data.language
+        source.is_active = source_data.is_active
+        source.priority = source_data.priority
+        source.is_permanent = source_data.is_permanent
+        
+        db.commit()
+        db.refresh(source)
+        
+        # Reschedule dynamically
+        job_id = f"scrape_source_{source.id}"
+        from scheduler import schedule_source_crawl, scheduler
+        if source.is_active:
+            schedule_source_crawl(source)
+        else:
+            if scheduler.get_job(job_id):
+                scheduler.remove_job(job_id)
+                
+        return source
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=400, detail=f"Failed to update source: {e}")
+    finally:
+        db.close()
+
+@app.delete("/api/v1/scraper/sources/{source_id}", status_code=204)
+def delete_source(source_id: int, bypass_permanent: bool = Query(False)):
+    db = SessionLocal()
+    try:
+        source = db.query(ScrapeSource).filter(ScrapeSource.id == source_id).first()
+        if not source:
+            raise HTTPException(status_code=404, detail="Scrape source not found")
+        
+        if source.is_permanent and not bypass_permanent:
+            raise HTTPException(
+                status_code=400, 
+                detail="Cannot delete permanently registered source. Please confirm permanent bypass."
+            )
         
         # Remove from background scheduler
         job_id = f"scrape_source_{source.id}"
@@ -128,6 +176,11 @@ def delete_source(source_id: int):
         db.delete(source)
         db.commit()
         return
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=400, detail=f"Failed to delete source: {e}")
     finally:
         db.close()
 

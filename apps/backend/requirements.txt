@@ -14,3 +14,5 @@ huggingface-hub
 langchain
 langchain-community
 pydantic
+beautifulsoup4
+lxml

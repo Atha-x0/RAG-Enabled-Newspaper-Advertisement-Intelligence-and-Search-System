@@ -127,6 +127,11 @@ class ScrapeSource(Base):
     cron_schedule = Column(String(50), default='0 6 * * *')
     language = Column(String(20), default='en')
     is_active = Column(Boolean, default=True)
+    priority = Column(Integer, default=3)
+    is_permanent = Column(Boolean, default=False)
+    region = Column(String(100), nullable=True)  # e.g., 'Maharashtra', 'Delhi'
+    verification_status = Column(String(20), default='PENDING')  # PENDING, VERIFIED, REJECTED
+    last_crawl_time = Column(DateTime, nullable=True)
     
     logs = relationship("ScrapeLog", back_populates="source", cascade="all, delete-orphan")
 
@@ -145,3 +150,51 @@ class ScrapeLog(Base):
     downloaded_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     source = relationship("ScrapeSource", back_populates="logs")
+
+
+# ── Real-time Web Search Results ─────────────────────────────────────────────
+
+class WebScrapedResult(Base):
+    """
+    Stores real-time scraped results from newspapers, dealer sites, manufacturers,
+    and business directories. Each result is fully traceable to its source.
+    """
+    __tablename__ = 'web_scraped_results'
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    query = Column(String(500), nullable=False, index=True)
+    title = Column(String(500), nullable=False)
+    category = Column(String(255), nullable=True)
+    brand = Column(String(255), nullable=True)
+    specifications = Column(JSON, default={})
+    description = Column(Text, nullable=True)
+    price = Column(Float, nullable=True)
+    price_text = Column(String(100), nullable=True)
+    currency = Column(String(10), default="INR")
+    dealer_name = Column(String(255), nullable=True)
+    dealer_address = Column(Text, nullable=True)
+    contact_phone = Column(String(100), nullable=True)
+    contact_email = Column(String(255), nullable=True)
+    contact_website = Column(String(500), nullable=True)
+    image_url = Column(String(1024), nullable=True)
+    source_name = Column(String(255), nullable=False)
+    source_type = Column(String(50), nullable=False)   # newspaper_ad / dealer_website / manufacturer / directory
+    source_priority = Column(Integer, default=4)        # 1=newspaper (highest), 4=directory (lowest)
+    source_url = Column(String(1024), nullable=False)
+    publication_date = Column(String(20), nullable=True)
+    relevance_score = Column(Float, default=0.0)
+    scraped_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+# ── Search History ───────────────────────────────────────────────────────────
+
+class SearchHistory(Base):
+    """Tracks user search queries for history and trending searches."""
+    __tablename__ = 'search_history'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    query = Column(String(500), nullable=False, index=True)
+    result_count = Column(Integer, default=0)
+    search_type = Column(String(50), default='hybrid')   # hybrid / web / local
+    searched_at = Column(DateTime, default=datetime.datetime.utcnow)

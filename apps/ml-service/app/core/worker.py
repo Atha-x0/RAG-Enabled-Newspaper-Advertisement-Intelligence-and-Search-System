@@ -185,6 +185,25 @@ class IngestionWorker:
                 # Add publication date context
                 enriched_metadata["publication_date"] = pub_date
 
+                # Ad classifier check before indexing
+                import sys
+                _scraper_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../scraper-service"))
+                if _scraper_path not in sys.path:
+                    sys.path.insert(0, _scraper_path)
+                from ad_classifier import AdClassifier
+
+                ad_classifier = AdClassifier()
+                is_ad, ad_confidence, reason = ad_classifier.classify(
+                    text=raw_text,
+                    title=enriched_metadata.get("title", ""),
+                    source_type="newspaper_page"
+                )
+                if not is_ad:
+                    logger.info(f"IngestionWorker: Skipping non-ad block based on classification ({reason}) for region {i}: '{raw_text[:60]}'")
+                    if os.path.exists(crop_path):
+                        os.unlink(crop_path)
+                    continue
+
                 # Generate a UUID for SQLite insert since defaultValue UUIDV4 is Postgres features
                 import uuid
                 new_ad_id = str(uuid.uuid4())
@@ -235,7 +254,8 @@ class IngestionWorker:
 
                 # 9. Index in Qdrant Vector Store
                 logger.info("Inserting dense representation in Qdrant collections...")
-                composite_text = f"Title: {enriched_metadata.get('title')}\nCategory: {enriched_metadata.get('category')}\nText: {raw_text}\nVisual caption: {caption}"
+                english_raw_text = ad_classifier.translate_to_english(raw_text)
+                composite_text = f"Title: {enriched_metadata.get('title')}\nCategory: {enriched_metadata.get('category')}\nText: {english_raw_text}\nRaw Text: {raw_text}\nVisual caption: {caption}"
                 self.rag_engine.upsert_ad(new_ad_id, composite_text, enriched_metadata)
 
                 ad_count += 1

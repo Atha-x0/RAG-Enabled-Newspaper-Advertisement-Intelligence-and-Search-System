@@ -13,6 +13,19 @@ class RagEngine:
         self.has_gemini = self.chroma.has_gemini
         self.genai_client = self.chroma.genai_client
 
+    def _get_model_name(self) -> str:
+        model_name = "gemini-2.0-flash"
+        if self.has_gemini and self.genai_client:
+            try:
+                available_models = [m.name for m in self.genai_client.models.list()]
+                for m in ['models/gemini-3.5-flash', 'models/gemini-2.0-flash', 'models/gemini-2.5-pro']:
+                    if m in available_models:
+                        model_name = m.replace('models/', '')
+                        break
+            except Exception:
+                pass
+        return model_name
+
     def generate_answer(self, db: Session, question: str, filters: dict = None) -> dict:
         """
         Retrieves products from ChromaDB, joins with dealer prices in SQL DB,
@@ -71,7 +84,12 @@ class RagEngine:
                     "name": p.name,
                     "brand": p.brand
                 })
-        
+        if not source_products:
+            return {
+                "answer": "No verified results found",
+                "sources": []
+            }
+
         context = "\n\n=======================\n\n".join(context_blocks) if context_blocks else "No matching industrial parts or dealer listings found in database."
         
         prompt = f"""
@@ -96,7 +114,7 @@ class RagEngine:
             try:
                 # Use upgraded google-genai SDK
                 response = self.genai_client.models.generate_content(
-                    model='gemini-1.5-flash',
+                    model=self._get_model_name(),
                     contents=prompt
                 )
                 return {
