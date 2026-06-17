@@ -1558,7 +1558,7 @@ def legacy_ad_details(ad_id: str, db: Session = Depends(get_db)):
                 "company": prod.brand,
                 "brand": prod.brand,
                 "location": "Nagpur",
-                "contact_info": "+91-9823012345",
+                "contact_info": None,
                 "price": 14500,
                 "raw_text": prod.description,
                 "image_path": prod.image_url,

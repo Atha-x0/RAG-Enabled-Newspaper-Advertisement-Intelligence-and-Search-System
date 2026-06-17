@@ -266,6 +266,8 @@ class AdIntelRagEngine:
         === IMAGE VISUAL CAPTION ===
         {image_caption}
 
+        IMPORTANT: Extract ONLY the original contact information (contact_number, email, website) explicitly present in the OCR text or visual caption. Never generate, placeholder, or infer contact details. If not present, set them to null.
+
         Respond ONLY with the raw JSON object. No markdown wrapping.
         """
 
@@ -310,15 +312,37 @@ class AdIntelRagEngine:
         elif "pwd" in text_lower or "सार्वजनिक बांधकाम" in text_lower:
             company = "PWD Government"
 
+        # Extract phone using regex
+        phone_patterns = [
+            r"\b1800\s*-\s*\d{3}\s*-\s*\d{4}\b",
+            r"\b1800\s*-\s*\d{3,4}\s*-\s*\d{3,4}\b",
+            r"(?:\+91[\s\-]?)?\b[6-9]\d{9}\b",
+            r"(?:\+91[\s\-]?)?\b0?\d{2,4}\s*-\s*\d{6,8}\b",
+        ]
+        contact_number = None
+        for pattern in phone_patterns:
+            m = re.search(pattern, raw_text)
+            if m:
+                contact_number = m.group(0).strip()
+                break
+
+        # Extract email using regex
+        email_match = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", raw_text)
+        email = email_match.group(0).lower() if email_match else None
+
+        # Extract website/URL if present in the ad text
+        web_match = re.search(r"\bhttps?://[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b|\bwww\.[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b", raw_text, re.I)
+        website = web_match.group(0).strip() if web_match else None
+
         return {
             "title": "Newspaper Advertisement Notice",
             "company": company,
             "brand": None,
             "category": category,
             "location": location,
-            "contact_number": "1800-200-1122" if "contact" in text_lower or "call" in text_lower else None,
-            "email": "info@newspaper-ads.org",
-            "website": None,
+            "contact_number": contact_number,
+            "email": email,
+            "website": website,
             "price": None,
             "offer_details": raw_text[:150] + "...",
             "is_tender": category == "Government Tender"

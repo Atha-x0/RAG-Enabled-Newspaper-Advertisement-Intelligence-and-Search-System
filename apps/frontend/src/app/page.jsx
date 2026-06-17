@@ -205,15 +205,30 @@ function Dashboard() {
         // Sort web results by relevance_score then source_priority
         webResults.sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0) || (a.source_priority || 4) - (b.source_priority || 4));
 
+        let merged = [];
+        let seenIds = new Set();
+        for (let r of localResults) {
+          if (r && r.id && !seenIds.has(r.id)) {
+            seenIds.add(r.id);
+            merged.push({ ...r, is_local: true });
+          }
+        }
+        for (let r of webResults) {
+          if (r && r.id && !seenIds.has(r.id)) {
+            seenIds.add(r.id);
+            merged.push({ ...r, is_local: false });
+          }
+        }
+
         return {
-          results: localResults,
-          web_results: webResults,
+          results: merged,
+          web_results: [],
           search_meta: res.data.search_meta || {},
         };
       }
 
       // Plain array from /products
-      const results = Array.isArray(res.data) ? res.data : [];
+      const results = Array.isArray(res.data) ? res.data.map(r => ({ ...r, is_local: true })) : [];
       return { results, web_results: [], search_meta: {} };
     }
   });
@@ -594,33 +609,22 @@ function Dashboard() {
               ) : (
                 <div className="space-y-6">
                   {products.map((product) => (
-                    <ProductCard 
+                    <CatalogCard 
                       key={product.id}
                       product={product} 
-                      onViewDetails={(id) => { setSelectedProductId(id); setShowProductModal(true); }}
+                      onViewDetails={(id) => {
+                        if (product.is_local) {
+                          setSelectedProductId(id);
+                          setShowProductModal(true);
+                        } else {
+                          setSelectedAd(product);
+                          setShowAdModal(true);
+                        }
+                      }}
                       onToggleCompare={handleToggleCompare}
                       inCompareList={compareList.includes(product.id)}
                     />
                   ))}
-                </div>
-              )}
-
-              {/* Web / Newspaper Scraped Results Section */}
-              {webResults.length > 0 && (
-                <div className="space-y-4 mt-2">
-                  <div className="flex items-center space-x-3 pt-2 border-t border-slate-200">
-                    <Globe className="h-5 w-5 text-emerald-600" />
-                    <h3 className="text-lg font-bold text-slate-900">
-                      Live Web Results
-                      <span className="ml-2 text-xs font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">Real-Time</span>
-                    </h3>
-                    <span className="text-sm text-slate-500">— {webResults.length} results from newspapers, dealers & manufacturers</span>
-                  </div>
-                  <div className="space-y-4">
-                    {webResults.map((r) => (
-                        <WebResultCard key={r.id} result={r} onViewDetails={(ad) => { setSelectedAd(ad); setShowAdModal(true); }} />
-                      ))}
-                  </div>
                 </div>
               )}
             </div>
@@ -689,12 +693,46 @@ function Dashboard() {
               )}
               {/* Metadata */}
               <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
-                <div><strong>Source:</strong> {selectedAd.source_name}</div>
-                <div><strong>Publication Date:</strong> {selectedAd.publication_date}</div>
+                <div><strong>Source Newspaper or Website Name:</strong> {selectedAd.source_name}</div>
+                <div><strong>Source Type:</strong> {selectedAd.source_type === 'newspaper_ad' ? 'Newspaper Ad' : selectedAd.source_priority_label || 'Web Scraped Result'}</div>
+                <div><strong>Publication Date:</strong> {selectedAd.publication_date || 'Not Available'}</div>
+                <div><strong>Crawl Timestamp:</strong> {selectedAd.scraped_at ? new Date(selectedAd.scraped_at).toLocaleString() : 'Not Available'}</div>
+                <div>
+                  <strong>Verification Badge:</strong>{' '}
+                  <span className="ml-1.5 bg-emerald-100 border border-emerald-300 text-emerald-700 font-bold px-2 py-0.5 rounded text-[10px]">
+                    {selectedAd.is_verified_ad !== false ? 'Verified ✓' : 'Unverified'}
+                  </span>
+                </div>
                 <div><strong>Price:</strong> {selectedAd.price_text || (selectedAd.price ? `${selectedAd.currency || 'INR'} ${selectedAd.price}` : 'Not Available')}</div>
-                <div><strong>Dealer:</strong> {selectedAd.dealer_name}</div>
-                <div><strong>Contact:</strong> {selectedAd.contact_phone || selectedAd.contact_email || selectedAd.contact_website}</div>
-                <div><strong>Verification:</strong> {selectedAd.source_type === 'newspaper_ad' ? '✅ Verified' : '❓ Unverified'}</div>
+                {!(selectedAd.dealer_name || selectedAd.company || selectedAd.dealer_address || selectedAd.contact_phone || selectedAd.contact_info || selectedAd.contact_email || selectedAd.contact_website) ? (
+                  <div className="col-span-2 text-slate-600"><strong>Contact Information:</strong> Not Available</div>
+                ) : (
+                  <>
+                    {(selectedAd.dealer_name || selectedAd.company) && (
+                      <div><strong>Dealer:</strong> {selectedAd.dealer_name || selectedAd.company}</div>
+                    )}
+                    {selectedAd.dealer_address && (
+                      <div><strong>Address:</strong> {selectedAd.dealer_address}</div>
+                    )}
+                    {(selectedAd.contact_phone || selectedAd.contact_info || selectedAd.contact_email || selectedAd.contact_website) && (
+                      <div>
+                        <strong>Contact:</strong> {[
+                          selectedAd.contact_phone || selectedAd.contact_info,
+                          selectedAd.contact_email,
+                          selectedAd.contact_website
+                        ].filter(Boolean).join(' / ')}
+                      </div>
+                    )}
+                  </>
+                )}
+                {selectedAd.source_url && (
+                  <div className="col-span-2 pt-2 border-t border-slate-100 truncate">
+                    <strong>Canonical URL (Verification Link):</strong>{' '}
+                    <a href={selectedAd.source_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-mono text-xs">
+                      Verify Source Link ↗
+                    </a>
+                  </div>
+                )}
               </div>
               {/* Description */}
               {selectedAd.description && (
@@ -755,32 +793,50 @@ function Dashboard() {
 
 // SUB-COMPONENTS BELOW FOR SANITY AND ENCAPSULATION
 
-// ProductCard Sub-component
-function ProductCard({ product, onViewDetails, onToggleCompare, inCompareList }) {
-  // Gallery states
-  const mainImage = product.image_url || 'https://images.unsplash.com/photo-1597484211616-396f17e3978c?q=80&w=400';
+// CatalogCard Sub-component — displays real-time and catalog results in a unified, consistent card layout
+function CatalogCard({ product, onViewDetails, onToggleCompare, inCompareList }) {
+  const mainImage = product.image_url || product.image_path || 'https://images.unsplash.com/photo-1597484211616-396f17e3978c?q=80&w=400';
+  const [activeImgIndex, setActiveImgIndex] = useState(0);
   const galleryImages = [
     mainImage,
     'https://images.unsplash.com/photo-1581092160607-ee22621dd758?q=80&w=400',
     'https://images.unsplash.com/photo-1504711434969-e33886168f5c?q=80&w=400',
     'https://images.unsplash.com/photo-1558346490-a72e53ae2d4f?q=80&w=400'
   ];
-  const [activeImgIndex, setActiveImgIndex] = useState(0);
 
-  // Specifications
   const getSpec = (key) => {
     if (!product.specifications) return 'N/A';
     return product.specifications[key] || product.specifications[key.toLowerCase()] || 'N/A';
   };
 
+  const priceDisplay = product.min_price > 0 ? (
+    `₹${product.min_price.toLocaleString()}`
+  ) : product.price_text || (product.price ? `${product.currency || 'INR'} ${product.price}` : null);
+
+  const dealerName = product.dealer_name || (product.offers && product.offers.length > 0 ? product.offers[0].dealer_name : '');
+  const dealerAddress = product.dealer_address || (product.offers && product.offers.length > 0 ? product.offers[0].dealer_location : '');
+  
+  const phone = product.contact_phone || (product.offers && product.offers.length > 0 ? product.offers[0].phone : '');
+  const email = product.contact_email || (product.offers && product.offers.length > 0 ? product.offers[0].email : '');
+  const website = product.contact_website || (product.offers && product.offers.length > 0 ? product.offers[0].website : '');
+
+  const confidence = product.score || product.relevance_score || 0.0;
+  const confidencePercent = Math.round(confidence * 100);
+
+  const sourceName = product.source_name || 'Local Catalog';
+  const sourceType = product.source_type === 'local' ? 'Catalog Product' : (product.source_priority_label || 'Web Scraped Result');
+  const publicationDate = product.publication_date || 'N/A (Catalog Entry)';
+  const isVerified = product.is_verified_ad !== false;
+  const canonicalUrl = product.source_url || (product.id ? `/products/${product.id}` : '');
+
   return (
     <div className="bg-white border border-slate-200 rounded-[24px] p-6 shadow-sm flex flex-col lg:flex-row gap-6 hover:shadow-md transition-smooth">
       {/* Column 1: Image Gallery */}
-      <div className="w-full lg:w-[260px] flex flex-col space-y-3 shrink-0">
+      <div className="w-full lg:w-[240px] flex flex-col space-y-3 shrink-0">
         <div className="aspect-[16/9] w-full rounded-2xl overflow-hidden border border-slate-100 bg-slate-50">
           <img 
             src={galleryImages[activeImgIndex]} 
-            alt={product.name} 
+            alt={product.name || product.title} 
             className="w-full h-full object-cover" 
           />
         </div>
@@ -794,67 +850,116 @@ function ProductCard({ product, onViewDetails, onToggleCompare, inCompareList })
               <img src={img} alt="thumbnail" className="h-full w-full object-cover" />
             </button>
           ))}
-          <button className="h-11 w-11 rounded-lg border border-slate-200 flex items-center justify-center shrink-0 hover:bg-slate-50">
-            <ChevronRight className="h-4 w-4 text-slate-400" />
-          </button>
         </div>
       </div>
 
       {/* Column 2: Details & Specs */}
-      <div className="flex-1 flex flex-col justify-between">
+      <div className="flex-1 flex flex-col justify-between space-y-4">
         <div className="space-y-2">
-          <div className="flex items-center space-x-2">
-            <span className="bg-blue-50 text-blue-600 rounded px-2.5 py-0.5 text-xs font-bold uppercase tracking-wider">
-              {product.category || 'Electric Motors'}
+          <div className="flex items-center space-x-2 flex-wrap gap-y-1">
+            <span className="bg-blue-50 text-blue-600 rounded px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider">
+              {product.category || 'General'}
+            </span>
+            {confidencePercent > 0 && (
+              <span className="bg-slate-100 text-slate-650 px-2 py-0.5 rounded-full text-[10px] font-semibold font-mono">
+                {confidencePercent}% match confidence
+              </span>
+            )}
+            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+              isVerified ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-orange-50 border-orange-200 text-orange-700'
+            }`}>
+              {isVerified ? 'Verified ✓' : 'Unverified'}
             </span>
           </div>
+
           <h4 
             onClick={() => onViewDetails(product.id)}
             className="text-xl font-bold text-slate-900 cursor-pointer hover:text-blue-650 transition-smooth leading-tight"
           >
-            {product.name}
+            {product.name || product.title || 'Advertisement Notice'}
           </h4>
           <p className="text-xs text-slate-500 font-semibold">
-            Brand: {product.brand || 'Siemens'} <span className="text-slate-300 mx-2">|</span> Model: {product.model_number || '1LE7103-0EA42-2AA4'}
+            Brand: {product.brand || 'N/A'} <span className="text-slate-300 mx-2">|</span> Model: {product.model_number || 'N/A'}
           </p>
           <p className="text-sm text-slate-650 line-clamp-2 leading-relaxed">
-            {product.description || 'No descriptive summary is currently indexed for this industrial equipment.'}
+            {product.description || 'No descriptive summary is currently indexed for this listing.'}
           </p>
         </div>
-        {/* Horizontal Specifications blocks */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 border border-slate-200/50 rounded-2xl p-3.5 mt-4">
-          {[
-            { label: 'Power', key: 'Power' },
-            { label: 'Voltage', key: 'Voltage' },
-            { label: 'Frequency', key: 'Frequency' },
-            { label: 'Efficiency', key: 'Efficiency' }
-          ].map((spec) => (
-            <div key={spec.label} className="border-r border-slate-200 last:border-0 pr-3">
-              <span className="block text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-0.5">{spec.label}</span>
-              <span className="text-xs font-bold text-slate-800 font-mono leading-tight block">{getSpec(spec.key)}</span>
+
+        {/* Specifications */}
+        {product.specifications && Object.keys(product.specifications).length > 0 ? (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 border border-slate-200/50 rounded-2xl p-3.5">
+            {Object.entries(product.specifications).slice(0, 4).map(([k, v]) => (
+              <div key={k} className="border-r border-slate-200 last:border-0 pr-3">
+                <span className="block text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-0.5">{k}</span>
+                <span className="text-xs font-bold text-slate-800 font-mono leading-tight block">{v}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-xs text-slate-450 italic bg-slate-50 border border-slate-200/50 rounded-2xl p-3.5">No specifications cataloged.</div>
+        )}
+
+        {/* Dealer and Contact Information */}
+        <div className="bg-slate-50/50 border border-slate-150 rounded-xl p-3.5 text-xs space-y-2 text-slate-600">
+          <div className="flex flex-wrap items-center gap-3">
+            {dealerName ? (
+              <>
+                <span className="font-bold text-slate-800">Dealer: {dealerName}</span>
+                {dealerAddress && (
+                  <span className="flex items-center text-slate-500">
+                    <MapPin className="h-3.5 w-3.5 text-slate-450 mr-1" />
+                    {dealerAddress.substring(0, 60)}
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="font-medium text-slate-500 italic">Dealer: Not Available</span>
+            )}
+          </div>
+          
+          <div className="flex flex-wrap items-center gap-4 text-slate-600 border-t border-slate-200/40 pt-2">
+            {phone || email || website ? (
+              <>
+                {phone && <span className="flex items-center"><Phone className="h-3.5 w-3.5 text-blue-500 mr-1.5" />{phone}</span>}
+                {email && <span className="text-blue-600">{email}</span>}
+                {website && <span className="text-blue-600 truncate max-w-[200px]" title={website}>{website}</span>}
+              </>
+            ) : (
+              <span className="text-slate-500 italic">Contact Information: Not Available</span>
+            )}
+          </div>
+        </div>
+
+        {/* Provenance details block */}
+        <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-3.5 text-xs space-y-1.5 text-slate-650">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div><strong>Source:</strong> {sourceName}</div>
+            <div><strong>Source Type:</strong> {sourceType}</div>
+            <div><strong>Publication Date:</strong> {publicationDate}</div>
+          </div>
+          {canonicalUrl && (
+            <div className="pt-2 border-t border-slate-200/50 truncate">
+              <strong>Original URL:</strong>{' '}
+              <a href={canonicalUrl} target="_blank" rel="noopener noreferrer" className="text-blue-650 hover:underline font-mono text-[10px]">
+                {canonicalUrl}
+              </a>
             </div>
-          ))}
+          )}
         </div>
       </div>
 
       {/* Column 3: Price & Actions */}
-      <div className="w-full lg:w-[220px] flex flex-col justify-between shrink-0 pl-0 lg:pl-4 py-1">
+      <div className="w-full lg:w-[200px] flex flex-col justify-between shrink-0 pl-0 lg:pl-4 py-1">
         <div className="space-y-1">
-          <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Cheapest Deal Starts At</span>
+          <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Price Details</span>
           <div className="flex items-baseline space-x-1">
-            {product.min_price > 0 ? (
-              <span className="text-3xl font-extrabold text-slate-900 font-mono leading-none">
-                ₹{product.min_price.toLocaleString()}
-              </span>
+            {priceDisplay ? (
+              <span className="text-2xl font-extrabold text-slate-900 font-mono leading-none">{priceDisplay}</span>
             ) : (
-              <span className="text-sm font-bold text-slate-500 leading-none">
-                Price: Not Available
-              </span>
+              <span className="text-sm font-bold text-slate-500 leading-none">Price Not Available</span>
             )}
           </div>
-          {product.min_price > 0 && (
-            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Excl. GST</span>
-          )}
         </div>
 
         <div className="space-y-2 mt-4 lg:mt-0">
@@ -863,134 +968,19 @@ function ProductCard({ product, onViewDetails, onToggleCompare, inCompareList })
             className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl flex items-center justify-center transition-smooth shadow-sm"
           >
             <Tag className="h-4 w-4 mr-2" />
-            Get Offers
+            Get Details
           </button>
           
-          <button
-            onClick={() => onToggleCompare(product.id)}
-            className={`w-full py-2.5 font-bold text-xs rounded-xl flex items-center justify-center transition-smooth border ${inCompareList ? 'bg-blue-50 border-blue-600 text-blue-600' : 'bg-white border-blue-600 text-blue-600 hover:bg-blue-50'}`}
-          >
-            {inCompareList ? <Check className="h-4 w-4 mr-1.5" /> : <Plus className="h-4 w-4 mr-1.5" />}
-            {inCompareList ? 'Compared' : 'Compare'}
-          </button>
+          {product.is_local && (
+            <button
+              onClick={() => onToggleCompare(product.id)}
+              className={`w-full py-2.5 font-bold text-xs rounded-xl flex items-center justify-center transition-smooth border ${inCompareList ? 'bg-blue-50 border-blue-600 text-blue-600' : 'bg-white border-blue-600 text-blue-600 hover:bg-blue-50'}`}
+            >
+              {inCompareList ? <Check className="h-4 w-4 mr-1.5" /> : <Plus className="h-4 w-4 mr-1.5" />}
+              {inCompareList ? 'Compared' : 'Compare'}
+            </button>
+          )}
         </div>
-      </div>
-    </div>
-  );
-}
-
-// WebResultCard — displays real-time scraped results from newspapers/dealers/manufacturers
-function WebResultCard({ result, onViewDetails }) {
-  const sourcePriorityConfig = {
-    1: { label: 'Newspaper Ad', color: 'bg-orange-50 border-orange-200 text-orange-700', dot: 'bg-orange-500' },
-    2: { label: 'Dealer Website', color: 'bg-blue-50 border-blue-200 text-blue-700', dot: 'bg-blue-500' },
-    3: { label: 'Manufacturer', color: 'bg-purple-50 border-purple-200 text-purple-700', dot: 'bg-purple-500' },
-    4: { label: 'Directory', color: 'bg-slate-100 border-slate-200 text-slate-600', dot: 'bg-slate-400' },
-  };
-  const cfg = sourcePriorityConfig[result.source_priority] || sourcePriorityConfig[4];
-
-  return (
-    <div className="bg-white border border-slate-200 rounded-[20px] p-5 shadow-sm hover:shadow-md transition-smooth">
-      <div className="flex flex-col md:flex-row gap-4">
-        {/* Left: content */}
-        <div className="flex-1 space-y-2">
-          {/* Source badge + priority */}
-          <div className="flex items-center space-x-2 flex-wrap gap-y-1">
-            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${cfg.color}`}>
-              <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${cfg.dot}`}></span>
-              {cfg.label}
-            </span>
-            <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
-              {result.source_name}
-            </span>
-            {result.publication_date && (
-              <span className="flex items-center text-[10px] text-slate-400 font-medium">
-                <Calendar className="h-3 w-3 mr-1" />
-                {result.publication_date}
-              </span>
-            )}
-            {result.relevance_score > 0 && (
-              <span className="text-[10px] text-slate-400 font-mono">
-                {Math.round(result.relevance_score * 100)}% match
-              </span>
-            )}
-          </div>
-
-          {/* Title */}
-          <button className="text-left text-base font-bold text-slate-900 leading-snug hover:underline" onClick={() => onViewDetails && onViewDetails(result)}>{result.title || 'Advertisement / Product Listing'}</button>
-
-          {/* Category + Brand */}
-          {(result.category || result.brand) && (
-            <div className="flex items-center space-x-2 text-xs text-slate-500">
-              {result.category && <span className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded font-semibold">{result.category}</span>}
-              {result.brand && <span className="font-semibold text-slate-700">Brand: {result.brand}</span>}
-            </div>
-          )}
-
-          {/* Description */}
-          {result.description && (
-            <p className="text-sm text-slate-600 line-clamp-3 leading-relaxed">{result.description}</p>
-          )}
-
-          {/* Specifications */}
-          {result.specifications && Object.keys(result.specifications).length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {Object.entries(result.specifications).slice(0, 4).map(([k, v]) => (
-                <span key={k} className="bg-slate-50 border border-slate-200 text-slate-600 text-[10px] font-semibold px-2 py-0.5 rounded font-mono">
-                  {k}: {v}
-                </span>
-              ))}
-            </div>
-          )}
-
-          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 pt-1">
-  {(result.dealer_name || result.dealer_address || result.contact_phone || result.contact_email) ? (
-    <>
-      {result.dealer_name && (<span className="font-semibold text-slate-800">{result.dealer_name}</span>)}
-      {result.dealer_address && (
-        <span className="flex items-center text-slate-500">
-          <MapPin className="h-3 w-3 mr-1 text-slate-400" />{result.dealer_address.substring(0, 60)}
-        </span>
-      )}
-      {result.contact_phone && (
-        <span className="flex items-center text-slate-600 font-medium">
-          <Phone className="h-3 w-3 mr-1 text-blue-500" />{result.contact_phone}
-        </span>
-      )}
-      {result.contact_email && (<span className="text-blue-600">{result.contact_email}</span>)}
-    </>
-  ) : (
-    <span className="text-sm text-slate-600">Contact Information: Not Available</span>
-  )}
-</div>
-        </div>
-
-        {/* Right: price + link */}
-        <div className="shrink-0 flex flex-col items-end justify-between min-w-[140px]">
-          {(result.price_text || result.price) ? (
-            <div className="text-right">
-              <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">Price</span>
-              <span className="text-base font-bold text-slate-800">
-                {result.price_text || `${result.currency || 'INR'} ${result.price}`}
-              </span>
-            </div>
-          ) : (
-            <div className="text-right">
-              <span className="text-sm font-bold text-slate-500">Price: Not Available</span>
-            </div>
-          )}
-          {/* Removed external redirect buttons */}
-        </div>
-      </div>
-
-      {/* Footer: scraped timestamp */}
-      <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
-        <span className="text-[9px] text-slate-400 font-medium">
-          Fetched live · {result.scraped_at ? new Date(result.scraped_at).toLocaleString() : 'Just now'}
-        </span>
-        <span className="text-[9px] text-slate-400 font-mono truncate max-w-[240px]" title={result.source_url}>
-          {result.source_url}
-        </span>
       </div>
     </div>
   );
