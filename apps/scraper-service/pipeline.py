@@ -28,13 +28,13 @@ class ScraperPipeline:
             exists = session.query(ScrapeLog).filter(ScrapeLog.file_hash == file_hash).first()
             if exists:
                 logger.info(f"Duplicate file detected (SHA-256: {file_hash}). Skipping.")
-                # Save duplicate log entry
                 log_entry = ScrapeLog(
                     source_id=source_id,
                     publication_date=publication_date,
                     source_url=url,
-                    file_hash=file_hash,
-                    status="DUPLICATE"
+                    file_hash=None,
+                    status="DUPLICATE",
+                    error_message=f"Duplicate file detected (SHA-256: {file_hash})"
                 )
                 session.add(log_entry)
                 session.commit()
@@ -106,7 +106,8 @@ class ScraperPipeline:
                 }
                 data = {
                     'publication_date': publication_date,
-                    'language': language
+                    'language': language,
+                    'source_id': str(source_id)
                 }
                 
                 res = requests.post(UPLOAD_ENDPOINT, files=files, data=data)

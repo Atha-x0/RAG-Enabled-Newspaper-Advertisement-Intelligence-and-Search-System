@@ -35,6 +35,8 @@ class SourceCreate(BaseModel):
     is_active: bool = Field(True, example=True)
     priority: Optional[int] = Field(3, example=3)
     is_permanent: Optional[bool] = Field(False, example=False)
+    region: Optional[str] = Field(None, example="Maharashtra")
+    verification_status: Optional[str] = Field("PENDING", example="VERIFIED")
 
 class SourceResponse(SourceCreate):
     id: int
@@ -98,7 +100,9 @@ def create_source(source_data: SourceCreate):
             language=source_data.language,
             is_active=source_data.is_active,
             priority=source_data.priority,
-            is_permanent=source_data.is_permanent
+            is_permanent=source_data.is_permanent,
+            region=source_data.region,
+            verification_status=source_data.verification_status
         )
         db.add(source)
         db.commit()
@@ -132,6 +136,8 @@ def update_source(source_id: int, source_data: SourceCreate):
         source.is_active = source_data.is_active
         source.priority = source_data.priority
         source.is_permanent = source_data.is_permanent
+        source.region = source_data.region
+        source.verification_status = source_data.verification_status
         
         db.commit()
         db.refresh(source)

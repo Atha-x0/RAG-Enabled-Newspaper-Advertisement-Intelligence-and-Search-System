@@ -2330,18 +2330,30 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
         )}
 
         {/* Seeds Table */}
-        {adminTab === 'sources' && (
+        {adminTab === 'sources' && (!scrapersData.sources || scrapersData.sources.length === 0) && (
+          <div className="bg-amber-50 border border-amber-200 text-amber-800 p-5 rounded-3xl mb-6 flex items-start space-x-3.5">
+            <ShieldAlert className="h-6 w-6 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div>
+              <h5 className="font-bold text-sm">No Scraping Sources Configured</h5>
+              <p className="text-xs text-amber-700 mt-1">
+                Newspaper and e-paper ingestion is currently inactive because the ScrapeSource table is empty. Please add a scraping source or restart the backend to seed the default verified sources.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {adminTab === 'sources' && scrapersData.sources && scrapersData.sources.length > 0 && (
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-slate-200 text-slate-400 font-bold uppercase tracking-wider">
                 <th className="pb-3">Source Name</th>
                 <th className="pb-3">Crawl URL</th>
-                <th className="pb-3">Type</th>
-                <th className="pb-3">Region</th>
+                <th className="pb-3">Region & Lang</th>
                 <th className="pb-3">Verification</th>
                 <th className="pb-3">Last Crawl</th>
-                <th className="pb-3">Priority</th>
-                <th className="pb-3">Cron Schedule</th>
+                <th className="pb-3">Last Run Status</th>
+                <th className="pb-3">Success/Failure</th>
+                <th className="pb-3">Total Ads</th>
                 <th className="pb-3">Status</th>
                 <th className="pb-3 text-right">Actions</th>
               </tr>
@@ -2359,22 +2371,37 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
                   </td>
                   <td className="py-4 font-mono text-slate-500 truncate max-w-[200px]" title={s.crawling_url}>{s.crawling_url}</td>
                   <td className="py-4">
-                    <span className="bg-blue-50 text-blue-600 border border-blue-100 font-bold text-[9px] uppercase px-2 py-0.5 rounded">
-                      {s.source_type}
+                    <span className="font-semibold text-slate-700">{s.region || 'N/A'}</span>
+                    <span className="ml-1 bg-slate-100 text-slate-650 border border-slate-200 font-mono text-[9px] uppercase px-1 rounded">
+                      {s.language}
                     </span>
                   </td>
-                  <td className="py-4">{s.region || ''}</td>
-                  <td className="py-4">{s.verification_status || ''}</td>
-                  <td className="py-4">{s.last_crawl_time ? new Date(s.last_crawl_time).toLocaleString() : ''}</td>
-                  <td className="py-4 font-semibold text-slate-700">
-                    {{
-                      1: '1 - Newspaper',
-                      2: '2 - Dealer',
-                      3: '3 - Manufacturer',
-                      4: '4 - Directory'
-                    }[s.priority] || s.priority || '3 - Manufacturer'}
+                  <td className="py-4">
+                    <span className={`font-bold text-[10px] px-2 py-0.5 rounded-full ${
+                      s.verification_status === 'VERIFIED' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' :
+                      s.verification_status === 'REJECTED' ? 'bg-red-50 text-red-700 border border-red-100' :
+                      'bg-amber-50 text-amber-700 border border-amber-100'
+                    }`}>
+                      {s.verification_status || 'PENDING'}
+                    </span>
                   </td>
-                  <td className="py-4 font-mono text-slate-500">{s.cron_schedule}</td>
+                  <td className="py-4 text-slate-600">{s.last_crawl_time ? new Date(s.last_crawl_time).toLocaleString() : 'Never'}</td>
+                  <td className="py-4">
+                    <span className={`font-bold text-[10px] px-2 py-0.5 rounded-full ${
+                      s.status === 'SUCCESS' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' :
+                      s.status === 'FAILED' ? 'bg-red-50 text-red-700 border border-red-100' :
+                      s.status === 'DUPLICATE' ? 'bg-indigo-50 text-indigo-700 border border-indigo-100' :
+                      'bg-slate-50 text-slate-500 border border-slate-100'
+                    }`}>
+                      {s.status || 'N/A'}
+                    </span>
+                  </td>
+                  <td className="py-4 font-mono font-semibold text-slate-600">
+                    <span className="text-emerald-600">{s.success_count || 0}</span>
+                    <span className="text-slate-300 mx-1">/</span>
+                    <span className="text-red-500">{s.failure_count || 0}</span>
+                  </td>
+                  <td className="py-4 font-mono font-bold text-blue-600 text-sm">{s.total_ads || 0}</td>
                   <td className="py-4">
                     <button
                       onClick={() => handleToggleActive(s.id)}

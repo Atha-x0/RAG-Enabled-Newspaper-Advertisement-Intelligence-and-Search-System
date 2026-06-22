@@ -21,6 +21,8 @@ class NewspaperPage(Base):
     total_ads_detected = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
+    source_id = Column(Integer, ForeignKey('scrape_sources.id'), nullable=True)
+    
     advertisements = relationship("Advertisement", back_populates="page", cascade="all, delete-orphan")
 
 class Advertisement(Base):
@@ -132,6 +134,9 @@ class ScrapeSource(Base):
     is_active = Column(Boolean, default=True)
     priority = Column(Integer, default=3)
     is_permanent = Column(Boolean, default=False)
+    region = Column(String(100), nullable=True)
+    verification_status = Column(String(20), default='PENDING')
+    last_crawl_time = Column(DateTime, nullable=True)
     
     logs = relationship("ScrapeLog", back_populates="source", cascade="all, delete-orphan")
 
@@ -183,6 +188,22 @@ def init_db():
             pass
         try:
             conn.execute(text("ALTER TABLE scrape_sources ADD COLUMN is_permanent BOOLEAN DEFAULT 0"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE scrape_sources ADD COLUMN region VARCHAR(100)"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE scrape_sources ADD COLUMN verification_status VARCHAR(20) DEFAULT 'PENDING'"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE scrape_sources ADD COLUMN last_crawl_time DATETIME"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE newspaper_pages ADD COLUMN source_id INTEGER REFERENCES scrape_sources(id)"))
         except Exception:
             pass
 

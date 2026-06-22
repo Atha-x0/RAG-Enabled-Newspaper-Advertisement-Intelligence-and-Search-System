@@ -18,6 +18,8 @@ class NewspaperPage(Base):
     total_ads_detected = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
+    source_id = Column(Integer, ForeignKey('scrape_sources.id'), nullable=True)
+    
     advertisements = relationship("Advertisement", back_populates="page", cascade="all, delete-orphan")
 
 class Advertisement(Base):

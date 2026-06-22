@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import re
 import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue

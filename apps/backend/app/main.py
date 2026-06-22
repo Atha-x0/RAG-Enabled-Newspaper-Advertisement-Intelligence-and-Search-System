@@ -36,6 +36,26 @@ try:
             logger.info("Migration: Added column 'is_permanent' to 'scrape_sources'.")
         except Exception:
             pass
+        try:
+            conn.execute(text("ALTER TABLE scrape_sources ADD COLUMN region VARCHAR(100)"))
+            logger.info("Migration: Added column 'region' to 'scrape_sources'.")
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE scrape_sources ADD COLUMN verification_status VARCHAR(20) DEFAULT 'PENDING'"))
+            logger.info("Migration: Added column 'verification_status' to 'scrape_sources'.")
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE scrape_sources ADD COLUMN last_crawl_time DATETIME"))
+            logger.info("Migration: Added column 'last_crawl_time' to 'scrape_sources'.")
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE newspaper_pages ADD COLUMN source_id INTEGER REFERENCES scrape_sources(id)"))
+            logger.info("Migration: Added column 'source_id' to 'newspaper_pages'.")
+        except Exception:
+            pass
 except Exception as e:
     logger.error(f"Failed to create database tables on startup: {e}")
 
@@ -527,36 +547,68 @@ def seed_mock_data():
             sources = [
                 models.ScrapeSource(
                     id=1,
-                    name="IndiaMART Industrial Motors Directory",
-                    crawling_url="http://mock-indiamart.com/motor-listings",
-                    source_type="indiamart",
-                    cron_schedule="0 9 * * *",
-                    language="en",
+                    name="Lokmat ePaper",
+                    crawling_url="http://mock-epaper.com/lokmat",
+                    source_type="epaper_pdf",
+                    cron_schedule="0 6 * * *",
+                    language="mr",
                     is_active=True,
-                    priority=4,
-                    is_permanent=True
+                    priority=1,
+                    is_permanent=True,
+                    region="Maharashtra",
+                    verification_status="VERIFIED"
                 ),
                 models.ScrapeSource(
                     id=2,
-                    name="Justdial Nagpur Dealers",
-                    crawling_url="http://mock-justdial.com/nagpur/industrial-parts",
-                    source_type="justdial",
-                    cron_schedule="0 10 * * *",
-                    language="en",
+                    name="Sakal ePaper",
+                    crawling_url="http://mock-epaper.com/sakal",
+                    source_type="epaper_pdf",
+                    cron_schedule="0 7 * * *",
+                    language="mr",
                     is_active=True,
-                    priority=2,
-                    is_permanent=True
+                    priority=1,
+                    is_permanent=True,
+                    region="Maharashtra",
+                    verification_status="VERIFIED"
                 ),
                 models.ScrapeSource(
                     id=3,
-                    name="Siemens Industrial Catalog",
-                    crawling_url="http://mock-catalog-portal.com/siemens-motors.pdf",
-                    source_type="website_catalog",
+                    name="Times of India",
+                    crawling_url="http://mock-epaper.com/toi",
+                    source_type="epaper_pdf",
                     cron_schedule="0 6 * * *",
                     language="en",
                     is_active=True,
-                    priority=3,
-                    is_permanent=True
+                    priority=2,
+                    is_permanent=True,
+                    region="National",
+                    verification_status="VERIFIED"
+                ),
+                models.ScrapeSource(
+                    id=4,
+                    name="Dainik Bhaskar",
+                    crawling_url="http://mock-epaper.com/dainikbhaskar",
+                    source_type="epaper_pdf",
+                    cron_schedule="0 8 * * *",
+                    language="hi",
+                    is_active=True,
+                    priority=2,
+                    is_permanent=True,
+                    region="National",
+                    verification_status="VERIFIED"
+                ),
+                models.ScrapeSource(
+                    id=5,
+                    name="Employment News",
+                    crawling_url="http://mock-epaper.com/employmentnews",
+                    source_type="epaper_pdf",
+                    cron_schedule="0 9 * * *",
+                    language="en",
+                    is_active=True,
+                    priority=1,
+                    is_permanent=True,
+                    region="National",
+                    verification_status="VERIFIED"
                 )
             ]
             db.add_all(sources)
@@ -1725,8 +1777,23 @@ def get_sources_logs(db: Session = Depends(get_db)):
     sources = db.query(models.ScrapeSource).all()
     logs = db.query(models.ScrapeLog).order_by(models.ScrapeLog.downloaded_at.desc()).limit(100).all()
     
-    return {
-        "sources": [{
+    serialized_sources = []
+    for s in sources:
+        # Find latest log
+        last_log = db.query(models.ScrapeLog).filter(models.ScrapeLog.source_id == s.id).order_by(models.ScrapeLog.downloaded_at.desc()).first()
+        status = last_log.status if last_log else "N/A"
+        
+        # Calculate success/failure counts
+        success_count = db.query(models.ScrapeLog).filter(models.ScrapeLog.source_id == s.id, models.ScrapeLog.status == "SUCCESS").count()
+        failure_count = db.query(models.ScrapeLog).filter(models.ScrapeLog.source_id == s.id, models.ScrapeLog.status == "FAILED").count()
+        
+        # Calculate total ads indexed (supporting both direct mapping and filename prefix backup)
+        total_ads = db.query(models.Advertisement).join(models.NewspaperPage).filter(
+            (models.NewspaperPage.source_id == s.id) | 
+            (models.NewspaperPage.filename.like(f"scrape_{s.id}_%"))
+        ).count()
+
+        serialized_sources.append({
             "id": s.id,
             "name": s.name,
             "crawling_url": s.crawling_url,
@@ -1735,8 +1802,18 @@ def get_sources_logs(db: Session = Depends(get_db)):
             "language": s.language,
             "is_active": s.is_active,
             "priority": s.priority,
-            "is_permanent": s.is_permanent
-        } for s in sources],
+            "is_permanent": s.is_permanent,
+            "region": s.region,
+            "verification_status": s.verification_status,
+            "last_crawl_time": s.last_crawl_time.isoformat() if s.last_crawl_time else None,
+            "status": status,
+            "total_ads": total_ads,
+            "success_count": success_count,
+            "failure_count": failure_count
+        })
+
+    return {
+        "sources": serialized_sources,
         "logs": [{
             "id": l.id,
             "source_id": l.source_id,
@@ -1762,7 +1839,9 @@ def create_scrape_source(source_data: ScrapeSourceCreate, db: Session = Depends(
             language=source_data.language,
             is_active=source_data.is_active,
             priority=source_data.priority,
-            is_permanent=source_data.is_permanent
+            is_permanent=source_data.is_permanent,
+            region=source_data.region,
+            verification_status=source_data.verification_status
         )
         db.add(source)
         db.commit()
@@ -1795,6 +1874,8 @@ def update_scrape_source(source_id: int, source_data: ScrapeSourceCreate, db: Se
         source.is_active = source_data.is_active
         source.priority = source_data.priority
         source.is_permanent = source_data.is_permanent
+        source.region = source_data.region
+        source.verification_status = source_data.verification_status
         db.commit()
         db.refresh(source)
 
@@ -1860,7 +1941,10 @@ def toggle_scrape_source(source_id: int, db: Session = Depends(get_db)):
             language=source.language,
             is_active=source.is_active,
             priority=source.priority,
-            is_permanent=source.is_permanent
+            is_permanent=source.is_permanent,
+            region=source.region,
+            verification_status=source.verification_status,
+            last_crawl_time=source.last_crawl_time
         )
         try:
             resp = requests.put(f"{SCRAPER_SERVICE_URL}/api/v1/scraper/sources/{source_id}", json=source_data.dict(), timeout=2.0)
@@ -1899,6 +1983,7 @@ async def upload_page(
     file: UploadFile = File(...),
     publication_date: str = Form(...),
     language: str = Form(...),
+    source_id: Optional[int] = Form(None),
     db: Session = Depends(get_db)
 ):
     try:
@@ -1915,7 +2000,8 @@ async def upload_page(
             file_path=file_url,
             publication_date=publication_date,
             language=language,
-            total_ads_detected=0
+            total_ads_detected=0,
+            source_id=source_id
         )
         db.add(page)
         db.commit()

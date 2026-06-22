@@ -20,7 +20,7 @@ if not DATABASE_URL:
     DATABASE_URL = f"sqlite:///{os.path.join(BASE_DIR, 'database.sqlite')}"
 elif DATABASE_URL.startswith("sqlite:///"):
     # Strip sqlite:/// to see if it's absolute or relative
-    db_path = DATABASE_URL[9:]
+    db_path = DATABASE_URL[10:].lstrip('/')
     if not os.path.isabs(db_path) and ":" not in db_path:
         DATABASE_URL = f"sqlite:///{os.path.abspath(os.path.join(BASE_DIR, db_path))}"
 
