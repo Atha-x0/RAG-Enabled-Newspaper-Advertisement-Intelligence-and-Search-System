@@ -271,19 +271,8 @@ class AdIntelRagEngine:
         Respond ONLY with the raw JSON object. No markdown wrapping.
         """
 
-        if self.has_gemini and self.genai_client:
-            try:
-                config = types.GenerateContentConfig(response_mime_type="application/json")
-                response = self.genai_client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
-                    config=config
-                )
-                structured_data = json.loads(response.text.strip())
-                logger.info(f"Successfully enriched metadata via Gemini. Category: {structured_data.get('category')}")
-                return structured_data
-            except Exception as e:
-                logger.error(f"Gemini API enrichment failed: {e}. Falling back to default parser.")
+        # Gemini metadata enrichment bypassed to conform to constraints
+        pass
 
         logger.warning("Gemini API skipped/failed. Using regex heuristic parser.")
         text_lower = raw_text.lower()

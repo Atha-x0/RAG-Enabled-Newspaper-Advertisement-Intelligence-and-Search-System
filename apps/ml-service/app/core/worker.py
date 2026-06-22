@@ -230,7 +230,7 @@ class IngestionWorker:
                         json.dumps(enriched_metadata),
                         crop_static_url,
                         x1, y1, x2, y2,
-                        conf
+                        conf,
                     )
                 )
 
@@ -249,6 +249,24 @@ class IngestionWorker:
                         json.dumps(vision_analysis["objects"]),
                         json.dumps(vision_analysis["logos"]),
                         0.95
+                    )
+                )
+
+                # Save Evidence details
+                new_ev_id = str(uuid.uuid4())
+                cursor.execute(
+                    """
+                    INSERT INTO advertisement_evidence
+                    (id, ad_id, web_scraped_result_id, original_url, html_snapshot, pdf_page_image, advertisement_image, scraped_timestamp, publication_date)
+                    VALUES (?, ?, NULL, ?, NULL, ?, ?, datetime('now'), ?);
+                    """,
+                    (
+                        new_ev_id,
+                        new_ad_id,
+                        file_url,
+                        file_url,
+                        crop_static_url,
+                        pub_date
                     )
                 )
 

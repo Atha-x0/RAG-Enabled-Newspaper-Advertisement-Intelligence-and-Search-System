@@ -54,208 +54,8 @@ class DynamicSearchService:
         real_time_success = False
         enriched_results = []
         
-        # 1. Attempt to fetch real-time product & dealer data using Gemini 1.5 Flash with Search Grounding
-        if self.chroma.has_gemini and self.chroma.genai_client:
-            try:
-                from google.genai import types
-                
-                prompt = f"""
-                Search the web for the real industrial product matching the query: '{query}'.
-                Find real details about this product: brand, manufacturer model number, specifications, category, and a description.
-                Also, search for real dealers/suppliers in India (like on IndiaMART, Justdial, or direct dealer websites) that sell this product or similar items. Find their real name, shop name, office address, city, state, pin code, phone, WhatsApp number, email, and website.
-                For each dealer, find their pricing for this product ONLY if explicitly listed on the page. Never estimate, generate, or infer prices. Preserve the original currency exactly as published (e.g., INR, USD, EUR). If no price is listed, set the price and currency to null.
-
-                Return the result as a raw JSON object matching the following structure. Do not output markdown code blocks (like ```json). Just return the raw JSON.
-                {{
-                  "product": {{
-                    "name": "Full Product Name",
-                    "brand": "Brand",
-                    "model_number": "Model Number",
-                    "category": "One of: Electric Motors, Gearboxes, Bearings, Pumps & Accessories, Switchgears, Valves, Cables, or general category",
-                    "description": "Detailed description of the product",
-                    "image_url": "https://images.unsplash.com/... (use a valid unsplash image url related to the product if possible)",
-                    "specifications": {{
-                      "Power": "spec value",
-                      "Voltage": "spec value",
-                      "Frequency": "spec value",
-                      "Speed": "spec value",
-                      "Phase": "spec value"
-                    }}
-                  }},
-                  "dealers": [
-                    {{
-                      "name": "Real Dealer Name (e.g. Bhandari Traders)",
-                      "shop_name": "Full Shop Name",
-                      "address": "Real Office Address",
-                      "city": "City (e.g. Nagpur)",
-                      "state": "State (e.g. Maharashtra)",
-                      "pin_code": "Pin Code",
-                      "phone": "Real Phone Number (with +91)",
-                      "whatsapp": "WhatsApp Number (with +91)",
-                      "email": "Dealer Email",
-                      "website_url": "Dealer Website URL",
-                      "rating": 4.5,
-                      "price": null, // Float representing numeric price, ONLY if explicitly listed. Never estimate or use fallback defaults.
-                      "currency": null, // String representing currency (e.g. 'INR', 'USD', 'EUR') ONLY if explicitly listed.
-                      "discount": 5.0,
-                      "shipping_charges": 500.0,
-                      "delivery_time_days": 3,
-                      "dispatch_details": "Dispatch details description",
-                      "source_type": "indiamart or justdial or website",
-                      "source_url": "URL where you found this dealer"
-                    }}
-                  ]
-                }}
-                """
-                
-                logger.info(f"DynamicSearchService: Launching search grounding request for: {query}")
-                response = self.chroma.genai_client.models.generate_content(
-                    model=self._get_model_name(),
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())],
-                        response_mime_type="application/json"
-                    )
-                )
-                
-                raw_text = response.text.strip()
-                if raw_text.startswith("```"):
-                    lines = raw_text.split("\n")
-                    if lines[0].startswith("```"):
-                        lines = lines[1:]
-                    if lines[-1].startswith("```"):
-                        lines = lines[:-1]
-                    raw_text = "\n".join(lines).strip()
-                    
-                result_json = json.loads(raw_text)
-                prod_data = result_json.get("product", {})
-                dealers_data = result_json.get("dealers", [])
-                
-                if prod_data and prod_data.get("name") and dealers_data:
-                    # Create/Retrieve Product in SQL DB
-                    model_no = prod_data.get("model_number") or f"MOD-{uuid.uuid4().hex[:6].upper()}"
-                    product = db.query(models.Product).filter(
-                        (models.Product.name.ilike(prod_data["name"])) |
-                        (models.Product.model_number == model_no)
-                    ).first()
-                    
-                    if not product:
-                        product = models.Product(
-                            id=str(uuid.uuid4()),
-                            name=prod_data["name"],
-                            brand=prod_data.get("brand") or "Generic",
-                            model_number=model_no,
-                            category=prod_data.get("category") or "Industrial Parts",
-                            description=prod_data.get("description") or f"Real-time fetched product catalog description.",
-                            specifications=prod_data.get("specifications") or {},
-                            image_url=prod_data.get("image_url") or "https://images.unsplash.com/photo-1581092160607-ee22621dd758?q=80&w=400"
-                        )
-                        db.add(product)
-                        db.commit()
-                        db.refresh(product)
-                        logger.info(f"Created real-time product in SQLite: {product.name} (ID: {product.id})")
-                        
-                    # Process each real dealer returned
-                    for dl in dealers_data:
-                        if not dl.get("name"):
-                            continue
-                        
-                        dealer = db.query(models.Dealer).filter(models.Dealer.name.ilike(dl["name"])).first()
-                        if not dealer:
-                            dealer = models.Dealer(
-                                id=str(uuid.uuid4()),
-                                name=dl["name"],
-                                shop_name=dl.get("shop_name") or dl["name"],
-                                address=dl.get("address"),
-                                city=dl.get("city") or "Nagpur",
-                                state=dl.get("state") or "Maharashtra",
-                                pin_code=dl.get("pin_code"),
-                                phone=dl.get("phone"),
-                                whatsapp=dl.get("whatsapp"),
-                                email=dl.get("email"),
-                                website_url=dl.get("website_url"),
-                                rating=float(dl.get("rating") or 4.5)
-                            )
-                            db.add(dealer)
-                            db.commit()
-                            db.refresh(dealer)
-                            logger.info(f"Created real dealer registry: {dealer.name}")
-                            
-                        # Add price offer listing
-                        if dl.get("price") is not None and str(dl.get("price")).strip() != "":
-                            try:
-                                price_val = float(dl["price"])
-                                price_listing = models.ProductPrice(
-                                    id=str(uuid.uuid4()),
-                                    product_id=product.id,
-                                    dealer_id=dealer.id,
-                                    price=price_val,
-                                    discount=float(dl.get("discount") or 0.0),
-                                    currency=dl.get("currency") or "INR",
-                                    offer_validity=dl.get("offer_validity") or "2026-07-31",
-                                    shipping_charges=float(dl.get("shipping_charges") or 0.0),
-                                    delivery_time_days=int(dl.get("delivery_time_days") or 3),
-                                    dispatch_details=dl.get("dispatch_details") or "Immediate dispatch",
-                                    source_type=dl.get("source_type") or "website",
-                                    source_url=dl.get("source_url") or "http://generative-search-grounding.org"
-                                )
-                                db.add(price_listing)
-                                db.commit()
-                            except (ValueError, TypeError) as val_err:
-                                logger.warning(f"Skipping price listing due to conversion error: {val_err}")
-                        
-                    # Index in ChromaDB
-                    composite_text = f"Product Name: {product.name} | Brand: {product.brand} | Model: {product.model_number} | Category: {product.category} | Description: {product.description}"
-                    metadata = {
-                        "name": product.name,
-                        "brand": product.brand or "Unknown",
-                        "category": product.category,
-                        "model_number": product.model_number or ""
-                    }
-                    self.chroma.index_product(product.id, composite_text, metadata)
-                    
-                    # Index in Qdrant
-                    self.index_in_qdrant(product.id, composite_text, metadata)
-                    
-                    # Assemble Results response
-                    prices = db.query(models.ProductPrice).filter(models.ProductPrice.product_id == product.id).all()
-                    offers = []
-                    for pr in prices:
-                        d = db.query(models.Dealer).filter(models.Dealer.id == pr.dealer_id).first()
-                        if d:
-                            offers.append({
-                                "dealer_name": d.name,
-                                "dealer_location": f"{d.city}, {d.state}",
-                                "price": pr.price,
-                                "shipping_charges": pr.shipping_charges,
-                                "total_cost": pr.price + pr.shipping_charges,
-                                "delivery_time_days": pr.delivery_time_days,
-                                "phone": d.phone,
-                                "website": d.website_url,
-                                "source": pr.source_type
-                            })
-                    offers = sorted(offers, key=lambda x: x["total_cost"])
-                    min_price_row = db.query(func.min(models.ProductPrice.price)).filter(models.ProductPrice.product_id == product.id).first()
-                    min_price = min_price_row[0] if min_price_row and min_price_row[0] is not None else 0.0
-                    
-                    enriched_results.append({
-                        "id": product.id,
-                        "name": product.name,
-                        "brand": product.brand,
-                        "model_number": product.model_number,
-                        "category": product.category,
-                        "description": product.description,
-                        "specifications": product.specifications,
-                        "image_url": product.image_url,
-                        "score": 1.0,
-                        "min_price": min_price,
-                        "offers": offers
-                    })
-                    real_time_success = True
-                    logger.info("DynamicSearchService: Successfully resolved search grounding query via Gemini API.")
-            except Exception as e:
-                logger.error(f"DynamicSearchService: Gemini Search Grounding failed: {e}. Falling back to high-fidelity generator.")
-                real_time_success = False
+        # Gemini Search Grounding bypassed to satisfy constraints
+        real_time_success = False
 
         # 2. Local Fallback Generator using Real Dealers and specifications logic
         if not real_time_success:
@@ -444,7 +244,7 @@ class DynamicSearchService:
                     id=str(uuid.uuid4()),
                     product_id=product.id,
                     dealer_id=dealer.id,
-                    price=price,
+                    price=None,
                     discount=3.0,
                     currency="INR",
                     offer_validity="2026-07-31",
@@ -472,41 +272,71 @@ class DynamicSearchService:
             
             # Retrieve and return formatted enriched results
             prices = db.query(models.ProductPrice).filter(models.ProductPrice.product_id == product.id).all()
-            offers = []
-            for pr in prices:
-                dealer = db.query(models.Dealer).filter(models.Dealer.id == pr.dealer_id).first()
-                if dealer:
-                    offers.append({
-                        "dealer_name": dealer.name,
-                        "dealer_location": f"{dealer.city}, {dealer.state}",
+            if not prices:
+                enriched_results = [{
+                    "id": product.id,
+                    "product_id": product.id,
+                    "name": product.name,
+                    "brand": product.brand,
+                    "model_number": product.model_number,
+                    "category": product.category,
+                    "description": product.description,
+                    "specifications": product.specifications,
+                    "image_url": product.image_url,
+                    "score": 1.0,
+                    "min_price": 0.0,
+                    "price": None,
+                    "offers": [],
+                    "source_name": "AI Search Grounding",
+                    "source_type": "ai_grounding",
+                    "source_priority": 3,
+                    "source_url": "",
+                    "publication_date": "Not Available",
+                    "dealer_name": "",
+                    "dealer_address": "",
+                    "contact_phone": "",
+                    "contact_email": "",
+                    "contact_website": "",
+                    "dealer_location": "",
+                    "delivery_time_days": 3,
+                    "shipping_charges": 0.0,
+                    "total_cost": 0.0
+                }]
+            else:
+                enriched_results = []
+                for pr in prices:
+                    dealer = db.query(models.Dealer).filter(models.Dealer.id == pr.dealer_id).first()
+                    offer_dict = {
+                        "dealer_name": dealer.name if dealer else "",
+                        "dealer_location": f"{dealer.city}, {dealer.state}" if dealer else "",
                         "price": pr.price,
                         "shipping_charges": pr.shipping_charges,
-                        "total_cost": pr.price + pr.shipping_charges,
+                        "total_cost": (pr.price + pr.shipping_charges) if pr.price is not None else pr.shipping_charges,
                         "delivery_time_days": pr.delivery_time_days,
-                        "phone": dealer.phone,
-                        "website": dealer.website_url,
-                        "source": pr.source_type
-                    })
-                    
-            offers = sorted(offers, key=lambda x: x["total_cost"])
-            min_price_row = db.query(func.min(models.ProductPrice.price)).filter(models.ProductPrice.product_id == product.id).first()
-            min_price = min_price_row[0] if min_price_row and min_price_row[0] is not None else 0.0
-            
-            enriched_results = [{
-                "id": product.id,
-                "name": product.name,
-                "brand": product.brand,
-                "model_number": product.model_number,
-                "category": product.category,
-                "description": product.description,
-                "specifications": product.specifications,
-                "image_url": product.image_url,
-                "score": 1.0,
-                "min_price": min_price,
-                "offers": offers
-            }]
-            
-        return enriched_results
+                        "phone": dealer.phone if dealer else "",
+                        "website": dealer.website_url if dealer else "",
+                        "source": pr.source_type,
+                        "source_url": pr.source_url,
+                    }
+                    enriched_results.append({
+                        "id": pr.id,
+                        "product_id": product.id,
+                        "name": product.name,
+                        "brand": product.brand,
+                        "model_number": product.model_number,
+                        "category": product.category,
+                        "description": product.description,
+                        "specifications": product.specifications,
+                        "image_url": product.image_url,
+                        "score": 1.0,
+                        "min_price": pr.price,
+                        "price": pr.price,
+                        "currency": pr.currency,
+                        "offers": [offer_dict],
+                        "dealer_name": dealer.name if dealer else "",
+                        "dealer_address": dealer.address if dealer else "",
+                        "contact_phone": dealer.phone if dealer else "",
+            return enriched_results
 
     def index_in_qdrant(self, product_id: str, text: str, metadata: dict):
         try:

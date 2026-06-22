@@ -100,7 +100,7 @@ class ProductPrice(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     product_id = Column(String(36), ForeignKey('products.id'), nullable=False)
     dealer_id = Column(String(36), ForeignKey('dealers.id'), nullable=False)
-    price = Column(Float, nullable=False)
+    price = Column(Float, nullable=True)
     discount = Column(Float, default=0.0)
     currency = Column(String(10), default="INR")
     offer_validity = Column(String(50), nullable=True)
@@ -185,6 +185,32 @@ class WebScrapedResult(Base):
     relevance_score = Column(Float, default=0.0)
     scraped_at = Column(DateTime, default=datetime.datetime.utcnow)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+        
+    # Metadata for independent cards
+    verification_status = Column(String(20), default="VERIFIED")  # VERIFIED, PARTIAL, REJECTED
+    canonical_url = Column(String(1024), nullable=True)
+    
+    evidence = relationship("AdvertisementEvidence", uselist=False, backref="web_scraped_result", cascade="all, delete-orphan")
+
+
+class AdvertisementEvidence(Base):
+    """
+    Stores evidence for advertisements (both newspaper crops and web scraped listings)
+    for strict traceability.
+    """
+    __tablename__ = 'advertisement_evidence'
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    ad_id = Column(String(36), ForeignKey('advertisements.id'), nullable=True)
+    web_scraped_result_id = Column(String(36), ForeignKey('web_scraped_results.id'), nullable=True)
+    
+    original_url = Column(String(1024), nullable=True)
+    html_snapshot = Column(Text, nullable=True)
+    pdf_page_image = Column(String(1024), nullable=True)
+    advertisement_image = Column(String(1024), nullable=True)
+    scraped_timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    publication_date = Column(String(50), nullable=True)
+
 
 
 # ── Search History ───────────────────────────────────────────────────────────
@@ -198,3 +224,20 @@ class SearchHistory(Base):
     result_count = Column(Integer, default=0)
     search_type = Column(String(50), default='hybrid')   # hybrid / web / local
     searched_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationship to logs
+    logs = relationship("SearchLog", back_populates="search", cascade="all, delete-orphan")
+
+class SearchLog(Base):
+    """Stores execution stage logs for each search."""
+    __tablename__ = 'search_logs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    search_id = Column(Integer, ForeignKey('search_history.id'), nullable=False)
+    stage_name = Column(String(100), nullable=False)
+    start_timestamp = Column(DateTime, nullable=False)
+    end_timestamp = Column(DateTime, nullable=False)
+    duration_ms = Column(Integer, nullable=False)
+    details = Column(JSON, default={})
+
+    search = relationship("SearchHistory", back_populates="logs")

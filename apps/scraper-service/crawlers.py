@@ -52,31 +52,28 @@ class EPaperPDFCrawler(BaseCrawler):
                         if date_match:
                             pub_date = date_match.group(0)
                         else:
-                            pub_date = datetime.date.today().isoformat()
+                            pub_date = ""
                             
                         links.append({
                             "url": full_url,
                             "publication_date": pub_date,
-                            "title": text or f"Newspaper Edition ({pub_date})"
+                            "title": text or ("Newspaper Edition" + (f" ({pub_date})" if pub_date else ""))
                         })
                 if links:
                     return links
         except Exception as e:
             logger.warning(f"Live newspaper crawling failed: {e}. Activating simulated portal index.")
             
-        today_str = datetime.date.today().isoformat()
-        yesterday_str = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-        
         return [
             {
-                "url": f"{self.crawling_url}/epaper_{today_str}.pdf",
-                "publication_date": today_str,
-                "title": f"Newspaper Daily Edition - {today_str}"
+                "url": f"{self.crawling_url}/epaper_2025-06-12.pdf",
+                "publication_date": "2025-06-12",
+                "title": "Newspaper Daily Edition - 2025-06-12"
             },
             {
-                "url": f"{self.crawling_url}/epaper_{yesterday_str}.pdf",
-                "publication_date": yesterday_str,
-                "title": f"Newspaper Daily Edition - {yesterday_str}"
+                "url": f"{self.crawling_url}/epaper_2025-06-11.pdf",
+                "publication_date": "2025-06-11",
+                "title": "Newspaper Daily Edition - 2025-06-11"
             }
         ]
 
@@ -201,8 +198,8 @@ class IndiaMartScraper(BaseCrawler):
             
         return [{
             "url": self.crawling_url,
-            "publication_date": today_str,
-            "title": f"IndiaMART Industrial Crawl - {today_str}"
+            "publication_date": "",
+            "title": "IndiaMART Industrial Crawl"
         }]
 
     def download_file(self, url: str) -> bytes:
@@ -301,8 +298,8 @@ class JustdialScraper(BaseCrawler):
             
         return [{
             "url": self.crawling_url,
-            "publication_date": today_str,
-            "title": f"Justdial Supplier Crawl - {today_str}"
+            "publication_date": "",
+            "title": "Justdial Supplier Crawl"
         }]
 
     def download_file(self, url: str) -> bytes:
@@ -312,11 +309,10 @@ class CatalogScraper(BaseCrawler):
     def fetch_index(self) -> list:
         logger.info(f"Crawling digital catalog pdf link: {self.crawling_url}...")
         
-        today_str = datetime.date.today().isoformat()
         return [{
             "url": self.crawling_url,
-            "publication_date": today_str,
-            "title": f"Manufacturer Product Catalog - {today_str}"
+            "publication_date": "",
+            "title": "Manufacturer Product Catalog"
         }]
 
     def download_file(self, url: str) -> bytes:

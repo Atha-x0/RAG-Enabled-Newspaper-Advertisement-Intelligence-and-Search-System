@@ -103,7 +103,7 @@ class ProductPrice(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     product_id = Column(String(36), ForeignKey('products.id'), nullable=False)
     dealer_id = Column(String(36), ForeignKey('dealers.id'), nullable=False)
-    price = Column(Float, nullable=False)
+    price = Column(Float, nullable=True)
     discount = Column(Float, default=0.0)
     currency = Column(String(10), default="INR")
     offer_validity = Column(String(50), nullable=True)
@@ -150,6 +150,24 @@ class ScrapeLog(Base):
     downloaded_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     source = relationship("ScrapeSource", back_populates="logs")
+
+class AdvertisementEvidence(Base):
+    """
+    Stores evidence for advertisements (both newspaper crops and web scraped listings)
+    for strict traceability.
+    """
+    __tablename__ = 'advertisement_evidence'
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    ad_id = Column(String(36), ForeignKey('advertisements.id'), nullable=True)
+    web_scraped_result_id = Column(String(36), ForeignKey('web_scraped_results.id'), nullable=True)
+    
+    original_url = Column(String(1024), nullable=True)
+    html_snapshot = Column(Text, nullable=True)
+    pdf_page_image = Column(String(1024), nullable=True)
+    advertisement_image = Column(String(1024), nullable=True)
+    scraped_timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    publication_date = Column(String(50), nullable=True)
 
 # Database engine and session creator
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})

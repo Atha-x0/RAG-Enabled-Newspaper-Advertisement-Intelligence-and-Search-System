@@ -55,13 +55,22 @@ class RagEngine:
                 for pr in prices:
                     dealer = db.query(Dealer).filter(Dealer.id == pr.dealer_id).first()
                     if dealer:
-                        total_cost = pr.price + pr.shipping_charges
+                        if pr.price is not None:
+                            total_cost = pr.price + pr.shipping_charges
+                            price_desc = (
+                                f"    Base Price: {pr.currency or 'INR'} {pr.price:,.2f}\n"
+                                f"    Shipping Charges: {pr.currency or 'INR'} {pr.shipping_charges:,.2f}\n"
+                                f"    Total Cost: {pr.currency or 'INR'} {total_cost:,.2f}\n"
+                            )
+                        else:
+                            price_desc = (
+                                "    Price: Not Available\n"
+                                f"    Shipping Charges: {pr.currency or 'INR'} {pr.shipping_charges:,.2f}\n"
+                            )
                         price_lines.append(
                             f"  - Dealer: {dealer.name} ({dealer.shop_name or 'Store'})\n"
                             f"    Location: {dealer.city}, {dealer.state}\n"
-                            f"    Base Price: Rs. {pr.price:,}\n"
-                            f"    Shipping Charges: Rs. {pr.shipping_charges:,}\n"
-                            f"    Total Cost: Rs. {total_cost:,}\n"
+                            f"{price_desc}"
                             f"    Delivery Time: {pr.delivery_time_days} days\n"
                             f"    Contact: {dealer.phone or 'N/A'}, WhatsApp: {dealer.whatsapp or 'N/A'}, Email: {dealer.email or 'N/A'}\n"
                             f"    Website: {dealer.website_url or 'N/A'}\n"

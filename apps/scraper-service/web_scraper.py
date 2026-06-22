@@ -235,6 +235,27 @@ def _extract_specs_from_text(text: str) -> Dict:
                 specs[key] = val
     return specs
 
+def _extract_publication_date(text: str) -> str:
+    if not text:
+        return ""
+    # Look for common date patterns:
+    # 1. ISO format (YYYY-MM-DD)
+    m1 = re.search(r'\b(19|20)\d{2}[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b', text)
+    if m1:
+        return m1.group(0)
+    # 2. DD-MM-YYYY
+    m2 = re.search(r'\b(0[1-9]|[12]\d|3[01])[-/](0[1-9]|1[0-2])[-/](19|20)\d{2}\b', text)
+    if m2:
+        parts = re.split(r'[-/]', m2.group(0))
+        return f"{parts[2]}-{parts[1]}-{parts[0]}"
+    # 3. Month DD, YYYY or DD Month YYYY
+    months = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
+    m3 = re.search(rf'\b(0[1-9]|[12]\d|3[01])?\s*({months})[a-z]*\s*(0[1-9]|[12]\d|3[01])?\s*[,.-]?\s*(19|20)\d{2}\b', text, re.IGNORECASE)
+    if m3:
+        return m3.group(0)
+    return ""
+
+
 def _score_relevance(query: str, text: str) -> float:
     q_words = set(re.findall(r"\w+", query.lower()))
     t_words = set(re.findall(r"\w+", text.lower()))
@@ -306,200 +327,6 @@ class TradeIndiaClassifiedScraper(BaseSiteScraper):
             )
 
         if not soup or not cards:
-            logger.info(f"TradeIndiaClassifiedScraper: Live website returned no results/failed. Activating high-quality simulated ad fallback for query '{query}'")
-            
-            # Let's define mock items matching the query terms
-            fallback_items = []
-            q_lower = query.lower()
-            
-            if "siemens" in q_lower or "motor" in q_lower:
-                fallback_items = [
-                    {
-                        "title": "Siemens 3-Phase Induction Motor (10 HP)",
-                        "description": "High durability Siemens 3-phase squirrel cage induction motor. TEFC, IP55 protection, Class F insulation, continuous duty (S1). Ideal for industrial pumps, fans, compressors, and heavy machinery. ISI marked and certified.",
-                        "price": 28500.0,
-                        "price_text": "₹28,500",
-                        "price_unit": "per piece",
-                        "specifications": {
-                            "Brand": "Siemens",
-                            "Power": "10 HP / 7.5 kW",
-                            "Speed": "1440 RPM",
-                            "Voltage": "415V AC",
-                            "Frequency": "50 Hz",
-                            "Phase": "3 Phase"
-                        },
-                        "dealer_name": "Apex Power Spares & Motors",
-                        "dealer_address": "102, Central Avenue, Near Telephone Exchange Square, Nagpur, Maharashtra",
-                        "dealer_city": "Nagpur",
-                        "dealer_state": "Maharashtra",
-                        "contact_phone": "+91-9823012345",
-                        "contact_email": "sales@apexpower.co.in",
-                        "contact_website": "http://www.apexpower.co.in",
-                        "image_url": "https://images.unsplash.com/photo-1597484211616-396f17e3978c?q=80&w=400",
-                    },
-                    {
-                        "title": "Siemens 2 HP Electric Motor (Single Phase)",
-                        "description": "Authorized dealer of Siemens single phase electric motors. Heavy-duty cast iron body, dual capacitor run, 100% copper winding. Ideal for agricultural and domestic pump applications. Ready stock available.",
-                        "price": 11500.0,
-                        "price_text": "₹11,500",
-                        "price_unit": "per piece",
-                        "specifications": {
-                            "Brand": "Siemens",
-                            "Power": "2 HP",
-                            "Speed": "2880 RPM",
-                            "Voltage": "220V AC",
-                            "Phase": "1 Phase"
-                        },
-                        "dealer_name": "Vidarbha Electrical Sales Corporation",
-                        "dealer_address": "G-5, M.I.D.C. Hingna Road, Nagpur, Maharashtra",
-                        "dealer_city": "Nagpur",
-                        "dealer_state": "Maharashtra",
-                        "contact_phone": "+91-9422109876",
-                        "contact_email": "contact@vidarbhaelectric.com",
-                        "image_url": "https://images.unsplash.com/photo-1581092160607-ee22621dd758?q=80&w=400",
-                    }
-                ]
-            elif "mcb" in q_lower or "havells" in q_lower or "cable" in q_lower or "wire" in q_lower or "breaker" in q_lower or "led" in q_lower:
-                fallback_items = [
-                    {
-                        "title": "Havells MCB 63 Amp TP C-Curve",
-                        "description": "Authorized supplier of Havells MCB distribution boards and switchgear. High breaking capacity of 10kA, suitable for overload and short-circuit protection in industrial networks. Enquire for bulk discounts.",
-                        "price": 1250.0,
-                        "price_text": "₹1,250",
-                        "price_unit": "per piece",
-                        "specifications": {
-                            "Brand": "Havells",
-                            "Type": "MCB (Miniature Circuit Breaker)",
-                            "Current Rating": "63 Amp",
-                            "Poles": "Triple Pole (TP)",
-                            "Curve": "C-Curve"
-                        },
-                        "dealer_name": "Maharashtra Motors & Pumps",
-                        "dealer_address": "Shop No 14, Lohar Chawl, Kalbadevi, Mumbai, Maharashtra",
-                        "dealer_city": "Mumbai",
-                        "dealer_state": "Maharashtra",
-                        "contact_phone": "+91-9892098765",
-                        "contact_email": "info@mahamotors.com",
-                        "image_url": "https://images.unsplash.com/photo-1558346490-a72e53ae2d4f?q=80&w=400",
-                    },
-                    {
-                        "title": "Havells 4 Sq mm 3 Core Copper Flexible Cable",
-                        "description": "Premium quality Havells multi-strand flexible copper cable. ISI marked, flame retardant (FR) properties, high conductivity. Perfect for industrial electrical panels, machineries and power extensions. 100 meters coil.",
-                        "price": 4800.0,
-                        "price_text": "₹4,800",
-                        "price_unit": "per roll",
-                        "specifications": {
-                            "Brand": "Havells",
-                            "Size": "4.0 Sq mm",
-                            "Core": "3 Core",
-                            "Material": "Copper",
-                            "Length": "100 Meters"
-                        },
-                        "dealer_name": "Vidarbha Electrical Sales Corporation",
-                        "dealer_address": "G-5, M.I.D.C. Hingna Road, Nagpur, Maharashtra",
-                        "dealer_city": "Nagpur",
-                        "dealer_state": "Maharashtra",
-                        "contact_phone": "+91-9422109876",
-                        "contact_email": "contact@vidarbhaelectric.com",
-                        "image_url": "https://images.unsplash.com/photo-1620283085439-39620a1e21c4?q=80&w=400",
-                    }
-                ]
-            elif "polycab" in q_lower:
-                fallback_items = [
-                    {
-                        "title": "Polycab Single Core 2.5 Sq mm Copper Wire",
-                        "description": "Flame Retardant (FR) PVC insulated building wires from Polycab. Highly conductive multi-strand copper wires designed for domestic and industrial wiring. High thermal stability and moisture resistance.",
-                        "price": 2450.0,
-                        "price_text": "₹2,450",
-                        "price_unit": "per roll",
-                        "specifications": {
-                            "Brand": "Polycab",
-                            "Size": "2.5 Sq mm",
-                            "Core": "Single Core",
-                            "Material": "Copper",
-                            "Length": "90 Meters"
-                        },
-                        "dealer_name": "Maharashtra Motors & Pumps",
-                        "dealer_address": "Shop No 14, Lohar Chawl, Kalbadevi, Mumbai, Maharashtra",
-                        "dealer_city": "Mumbai",
-                        "dealer_state": "Maharashtra",
-                        "contact_phone": "+91-9892098765",
-                        "contact_email": "info@mahamotors.com",
-                        "image_url": "https://images.unsplash.com/photo-1620283085439-39620a1e21c4?q=80&w=400",
-                    }
-                ]
-            elif "kirloskar" in q_lower or "pump" in q_lower:
-                fallback_items = [
-                    {
-                        "title": "Kirloskar Monoblock Water Pump (1 HP)",
-                        "description": "High efficiency Kirloskar domestic water pump. Self-priming, cast iron body, brass impeller, thermal overload protection. Ideal for water supply in apartments, bungalows, and irrigation.",
-                        "price": 7500.0,
-                        "price_text": "₹7,500",
-                        "price_unit": "per piece",
-                        "specifications": {
-                            "Brand": "Kirloskar",
-                            "Power": "1 HP / 0.75 kW",
-                            "Voltage": "220V AC",
-                            "Phase": "1 Phase",
-                            "Inlet/Outlet": "25 x 25 mm"
-                        },
-                        "dealer_name": "Apex Power Spares & Motors",
-                        "dealer_address": "102, Central Avenue, Near Telephone Exchange Square, Nagpur, Maharashtra",
-                        "dealer_city": "Nagpur",
-                        "dealer_state": "Maharashtra",
-                        "contact_phone": "+91-9823012345",
-                        "contact_email": "sales@apexpower.co.in",
-                        "contact_website": "http://www.apexpower.co.in",
-                        "image_url": "https://images.unsplash.com/photo-1581092160607-ee22621dd758?q=80&w=400",
-                    }
-                ]
-            else:
-                # Generic advertisement listing based on query
-                title_clean = query.strip().title()
-                fallback_items = [
-                    {
-                        "title": f"Premium {title_clean} for Industrial Supply",
-                        "description": f"High quality commercial {query} available in ready stock. Certified, durable and built for industrial-grade operations. We supply and distribute across all major Indian states. Call for quotes.",
-                        "price": 15000.0,
-                        "price_text": "₹15,000",
-                        "price_unit": "per unit",
-                        "specifications": {
-                            "Type": title_clean,
-                            "Grade": "A-Grade / Industrial",
-                            "Warranty": "12 Months"
-                        },
-                        "dealer_name": "Maharashtra Motors & Pumps",
-                        "dealer_address": "Shop No 14, Lohar Chawl, Kalbadevi, Mumbai, Maharashtra",
-                        "dealer_city": "Mumbai",
-                        "dealer_state": "Maharashtra",
-                        "contact_phone": "+91-9892098765",
-                        "contact_email": "info@mahamotors.com",
-                        "image_url": "https://images.unsplash.com/photo-1558346490-a72e53ae2d4f?q=80&w=400",
-                    }
-                ]
-            
-            for item in fallback_items[:limit]:
-                score = _score_relevance(query, f"{item['title']} {item['description']}")
-                results.append(self._make_result(
-                    title=item["title"],
-                    description=item["description"],
-                    price=item["price"],
-                    price_text=item["price_text"],
-                    price_unit=item["price_unit"],
-                    specifications=item["specifications"],
-                    dealer_name=item["dealer_name"],
-                    dealer_address=item["dealer_address"],
-                    dealer_city=item["dealer_city"],
-                    dealer_state=item["dealer_state"],
-                    contact_phone=item["contact_phone"],
-                    contact_email=item["contact_email"],
-                    contact_website=item.get("contact_website", ""),
-                    image_url=item["image_url"],
-                    source_url=f"https://www.tradeindia.com/search/?search={encoded}",
-                    publication_date=today,
-                    query_matched=query,
-                    relevance_score=score,
-                ))
             return results
 
         for card in cards[:limit * 2]:
@@ -557,7 +384,7 @@ class TradeIndiaClassifiedScraper(BaseSiteScraper):
                 contact_email=_extract_email(text),
                 image_url=img,
                 source_url=href,
-                publication_date=today,
+                publication_date=_extract_publication_date(text),
                 query_matched=query,
                 relevance_score=score,
             ))

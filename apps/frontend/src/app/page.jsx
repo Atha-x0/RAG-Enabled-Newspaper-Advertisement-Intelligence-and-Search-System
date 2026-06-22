@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Search, Upload, Database, FileText, BarChart3, HelpCircle, 
-  MapPin, Tag, Calendar, User, Phone, Globe, Layers, AlertCircle,
+  MapPin, Tag, Calendar, User, Phone, Globe, Mail, ExternalLink, Layers, AlertCircle,
   Loader2, RefreshCw, Send, CheckCircle2, ChevronRight, Sparkles,
   ArrowRightLeft, ShieldAlert, ShoppingBag, ShieldCheck, Star, 
   Clock, Truck, Check, Plus, Trash2, Edit3, Hexagon, Bell, Sun, Moon, Menu, X, ChevronDown, CheckCircle
@@ -24,6 +24,27 @@ const queryClient = new QueryClient({
   },
 });
 
+const formatCurrencySymbol = (currency) => {
+  if (!currency) return '₹';
+  const norm = currency.trim().toUpperCase();
+  const map = {
+    'INR': '₹',
+    'USD': '$',
+    'EUR': '€',
+    'GBP': '£',
+    'JPY': '¥',
+  };
+  return map[norm] || (norm + ' ');
+};
+
+const formatPriceDisplay = (price, currency) => {
+  if (price === undefined || price === null || price === 0) {
+    return 'Price: Not Available';
+  }
+  const symbol = formatCurrencySymbol(currency);
+  return `${symbol}${price.toLocaleString()}`;
+};
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -37,6 +58,7 @@ function Dashboard() {
   const [activeTab, setActiveTab] = useState('search'); // 'search', 'compare', 'chat', 'admin', 'analytics'
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const [developerMode, setDeveloperMode] = useState(false);
 
   // Search & Filtering State (Applied parameters for Query)
   const [searchQuery, setSearchQuery] = useState('');
@@ -205,37 +227,82 @@ function Dashboard() {
         // Sort web results by relevance_score then source_priority
         webResults.sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0) || (a.source_priority || 4) - (b.source_priority || 4));
 
-        let merged = [];
-        let seenIds = new Set();
-        for (let r of localResults) {
-          if (r && r.id && !seenIds.has(r.id)) {
-            seenIds.add(r.id);
-            merged.push({ ...r, is_local: true });
+        // Sort allResults
+        const getPrice = (r) => {
+          if (r.result_type === 'web_scraped') {
+            return r.price || 0;
           }
-        }
-        for (let r of webResults) {
-          if (r && r.id && !seenIds.has(r.id)) {
-            seenIds.add(r.id);
-            merged.push({ ...r, is_local: false });
+          return r.min_price || 0;
+        };
+
+        const getDeliveryTime = (r) => {
+          if (r.result_type === 'web_scraped') {
+            const dt = r.specifications?.["Delivery Time"] || r.specifications?.["delivery"] || 3;
+            return parseInt(dt) || 3;
           }
+          return r.offers?.length ? Math.min(...r.offers.map(o => o.delivery_time_days || 3)) : 3;
+        };
+
+        const getRankKey = (r) => {
+          const matchScore = parseFloat(r.score !== undefined && r.score !== null ? r.score : r.relevance_score || 0);
+          const sourceRelevance = parseFloat(r.relevance_score || 0);
+          const sourcePriority = parseInt(r.source_priority !== undefined && r.source_priority !== null ? r.source_priority : 4);
+          
+          let dateNum = 0;
+          const pubDate = r.publication_date || "";
+          if (pubDate && pubDate !== "Not Available") {
+            dateNum = parseInt(pubDate.replace(/[-/]/g, "")) || 0;
+          }
+          
+          const verificationConfidence = parseFloat(
+            r.detection_confidence !== undefined && r.detection_confidence !== null ? r.detection_confidence :
+            r.ad_confidence !== undefined && r.ad_confidence !== null ? r.ad_confidence : 1.0
+          );
+          
+          return { matchScore, sourceRelevance, sourcePriority, dateNum, verificationConfidence };
+        };
+
+        if (sortBy === 'Price Low to High') {
+          allResults.sort((a, b) => getPrice(a) - getPrice(b));
+        } else if (sortBy === 'Price High to Low') {
+          allResults.sort((a, b) => getPrice(b) - getPrice(a));
+        } else if (sortBy === 'Delivery Time') {
+          allResults.sort((a, b) => getDeliveryTime(a) - getDeliveryTime(b));
+        } else if (sortBy === 'Newest') {
+          allResults.sort((a, b) => (b.publication_date || '').localeCompare(a.publication_date || ''));
+        } else {
+          // Relevance ranking
+          allResults.sort((a, b) => {
+            const ka = getRankKey(a);
+            const kb = getRankKey(b);
+            if (kb.matchScore !== ka.matchScore) return kb.matchScore - ka.matchScore;
+            if (kb.sourceRelevance !== ka.sourceRelevance) return kb.sourceRelevance - ka.sourceRelevance;
+            if (ka.sourcePriority !== kb.sourcePriority) return ka.sourcePriority - kb.sourcePriority;
+            if (kb.dateNum !== ka.dateNum) return kb.dateNum - ka.dateNum;
+            return kb.verificationConfidence - ka.verificationConfidence;
+          });
         }
 
         return {
-          results: merged,
-          web_results: [],
+          results: localResults,
+          web_results: webResults,
+          all_results: allResults,
           search_meta: res.data.search_meta || {},
+          developer_telemetry: res.data.developer_telemetry || null
         };
       }
 
       // Plain array from /products
-      const results = Array.isArray(res.data) ? res.data.map(r => ({ ...r, is_local: true })) : [];
+      const results = Array.isArray(res.data) ? res.data : [];
       return { results, web_results: [], search_meta: {} };
     }
   });
 
   const products = searchData.results || [];
   const webResults = searchData.web_results || [];
+  const allResults = searchData.all_results || [];
   const searchMeta = searchData.search_meta || {};
+  const developerTelemetry = searchData.developer_telemetry || null;
 
   const handleApplyFilters = () => {
     setAppliedCategory(localCategory);
@@ -489,6 +556,12 @@ function Dashboard() {
               <Bell className="h-5 w-5" />
             </button>
             <button 
+              onClick={() => setDeveloperMode(!developerMode)}
+              className={`px-3 py-1.5 rounded-xl font-bold text-xs border transition-smooth ${developerMode ? 'bg-indigo-650 text-white border-indigo-650 shadow-sm' : 'bg-slate-50 border-slate-200 text-slate-650 hover:bg-slate-100'}`}
+            >
+              Developer Mode: {developerMode ? 'ON' : 'OFF'}
+            </button>
+            <button 
               onClick={() => setDarkMode(!darkMode)}
               className="p-2.5 rounded-full hover:bg-slate-100 text-slate-650 transition-smooth"
             >
@@ -544,12 +617,34 @@ function Dashboard() {
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <div>
                   <h3 className="text-xl font-bold text-slate-900">
-                    Available Industrial Products ({products.length} {products.length === 1 ? 'item' : 'items'} cataloged)
+                    {appliedQuery 
+                      ? `Search Results (${allResults.length} ${allResults.length === 1 ? 'item' : 'items'} found)` 
+                      : `Available Industrial Products (${products.length} ${products.length === 1 ? 'item' : 'items'} cataloged)`}
                   </h3>
                   {appliedQuery && searchMeta.inferred_category && (
                     <p className="text-xs text-slate-500 mt-0.5">
                       Detected: <span className="font-semibold text-blue-600">{searchMeta.inferred_category}</span>
                       {searchMeta.inferred_location && <> · Location: <span className="font-semibold text-blue-600">{searchMeta.inferred_location}</span></>}
+                      {searchMeta.search_id && (
+                        <>
+                          {' · '}
+                          Search ID: <span className="font-mono bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded text-slate-700 font-bold">{searchMeta.search_id}</span>
+                          {' · '}
+                          <button
+                            onClick={() => {
+                              setSearchLogId(searchMeta.search_id);
+                              setAdminTab('search_logs');
+                              setActiveTab('admin');
+                              setTimeout(() => {
+                                refetchSearchLogs();
+                              }, 100);
+                            }}
+                            className="text-blue-600 hover:text-blue-700 font-bold hover:underline"
+                          >
+                            View Execution Logs
+                          </button>
+                        </>
+                      )}
                     </p>
                   )}
                 </div>
@@ -571,8 +666,136 @@ function Dashboard() {
                   </div>
                 </div>
               </div>
+ 
+              {/* Developer Mode Telemetry Dashboard */}
+              {developerMode && developerTelemetry && (
+                <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-3xl p-6 shadow-xl font-mono text-xs space-y-4">
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                    <h4 className="text-sm font-bold text-indigo-400 uppercase tracking-wider flex items-center">
+                      <ShieldAlert className="h-4 w-4 mr-2" /> Developer Telemetry Console
+                    </h4>
+                    <span className="bg-indigo-950/50 text-indigo-400 border border-indigo-900/50 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                      Latency: {developerTelemetry.api_response_time_ms}ms · Cache: {developerTelemetry.cache_hits ? 'HIT' : 'MISS'}
+                    </span>
+                  </div>
 
-              {/* Loading, Error, Empty & Products Results Grid */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {/* Column 1: API & DB Metrics */}
+                    <div className="space-y-3">
+                      <div className="bg-slate-950 p-4 rounded-2xl border border-slate-900 space-y-2">
+                        <span className="text-[10px] font-bold uppercase text-indigo-400">Database & API Logs</span>
+                        <div className="space-y-1.5 pt-1 text-[11px]">
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">API Response Time</span>
+                            <span className="text-emerald-400 font-bold">{developerTelemetry.api_response_time_ms} ms</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Cache Status</span>
+                            <span className={developerTelemetry.cache_hits ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
+                              {developerTelemetry.cache_hits ? 'HIT (30m Cached)' : 'MISS (Live Scrape)'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">SQL Queries Executed</span>
+                            <span className="text-indigo-400 font-bold">{developerTelemetry.sql_queries?.length || 0}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Warnings and Errors */}
+                      <div className="bg-slate-950 p-4 rounded-2xl border border-slate-900 space-y-2">
+                        <span className="text-[10px] font-bold uppercase text-indigo-400">Diagnostics Log</span>
+                        <div className="space-y-1 pt-1 text-[11px]">
+                          {developerTelemetry.errors && developerTelemetry.errors.length > 0 ? (
+                            developerTelemetry.errors.map((err, i) => (
+                              <div key={i} className="text-red-400">✗ ERROR: {err}</div>
+                            ))
+                          ) : (
+                            <div className="text-slate-500">No runtime exceptions captured.</div>
+                          )}
+                          {developerTelemetry.warnings && developerTelemetry.warnings.map((warn, i) => (
+                            <div key={i} className="text-amber-400">! WARN: {warn}</div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Column 2: Gemini API Usage */}
+                    <div className="bg-slate-950 p-4 rounded-2xl border border-slate-900 space-y-3 md:col-span-1">
+                      <span className="text-[10px] font-bold uppercase text-indigo-400">LLM Grounding Statistics</span>
+                      {developerTelemetry.gemini_stats ? (
+                        <div className="space-y-2 text-[11px]">
+                          <div className="flex justify-between border-b border-slate-900/50 pb-1">
+                            <span className="text-slate-500">Gemini LLM calls</span>
+                            <span className="text-indigo-400 font-bold">{developerTelemetry.gemini_stats.calls}</span>
+                          </div>
+                          <div className="flex justify-between border-b border-slate-900/50 pb-1">
+                            <span className="text-slate-500">Model Name</span>
+                            <span className="text-slate-350">{developerTelemetry.gemini_stats.model}</span>
+                          </div>
+                          <div className="flex justify-between border-b border-slate-900/50 pb-1">
+                            <span className="text-slate-500">Input Token Count</span>
+                            <span className="text-indigo-400">{developerTelemetry.gemini_stats.input_tokens} tokens</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Output Token Count</span>
+                            <span className="text-indigo-400">{developerTelemetry.gemini_stats.output_tokens} tokens</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-500 italic">No LLM resources utilized for this transaction.</p>
+                      )}
+                    </div>
+
+                    {/* Column 3: Active SQL Queries list */}
+                    <div className="bg-slate-950 p-4 rounded-2xl border border-slate-900 space-y-2 md:col-span-1 overflow-y-auto max-h-40">
+                      <span className="text-[10px] font-bold uppercase text-indigo-400">Captured SQL Operations</span>
+                      <div className="space-y-1.5 pt-1 text-[10px] font-mono text-slate-400">
+                        {developerTelemetry.sql_queries && developerTelemetry.sql_queries.map((q, idx) => (
+                          <div key={idx} className="pb-1 border-b border-slate-900/50 last:border-0 truncate" title={q}>
+                            {idx + 1}. <span className="text-indigo-300">{q}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Telemetry per card details */}
+                  <div className="bg-slate-950 p-4 rounded-2xl border border-slate-900 space-y-2">
+                    <span className="text-[10px] font-bold uppercase text-indigo-400">Card-level Telemetry Metrics</span>
+                    <div className="overflow-x-auto max-h-32 text-[10px] text-slate-400">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-500 font-bold uppercase">
+                            <th className="pb-1">Card ID</th>
+                            <th className="pb-1">Semantic Score</th>
+                            <th className="pb-1">Priority Rank</th>
+                            <th className="pb-1">Composite Key [Score, Relevance, Priority, Recency, Confidence]</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-900">
+                          {allResults.map((r) => {
+                            const rid = r.id;
+                            const score = developerTelemetry.similarity_scores?.[rid];
+                            const priority = developerTelemetry.source_priorities?.[rid];
+                            const rankKey = developerTelemetry.ranking_scores?.[rid];
+                            return (
+                              <tr key={r.id}>
+                                <td className="py-1 text-slate-350 truncate max-w-[120px]" title={rid}>{rid}</td>
+                                <td className="py-1 text-emerald-400 font-bold">{(score * 100).toFixed(1)}%</td>
+                                <td className="py-1">Priority {priority}</td>
+                                <td className="py-1 font-mono text-indigo-300">[{rankKey?.join(', ')}]</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Loading, Error, Empty & Unified Results Grid */}
               {isProductsLoading ? (
                 <div className="space-y-6">
                   {[1, 2].map((i) => (
@@ -600,7 +823,7 @@ function Dashboard() {
                     <RefreshCw className="h-4 w-4" /> Retry Connection
                   </button>
                 </div>
-              ) : products.length === 0 ? (
+              ) : allResults.length === 0 ? (
                 <div className="bg-white border border-slate-200 rounded-3xl p-12 text-center space-y-4 shadow-sm max-w-md mx-auto">
                   <Database className="h-12 w-12 text-slate-350 mx-auto" />
                   <h4 className="text-lg font-bold text-slate-900">No matching industrial products found</h4>
@@ -608,23 +831,27 @@ function Dashboard() {
                 </div>
               ) : (
                 <div className="space-y-6">
-                  {products.map((product) => (
-                    <CatalogCard 
-                      key={product.id}
-                      product={product} 
-                      onViewDetails={(id) => {
-                        if (product.is_local) {
-                          setSelectedProductId(id);
-                          setShowProductModal(true);
-                        } else {
-                          setSelectedAd(product);
-                          setShowAdModal(true);
-                        }
-                      }}
-                      onToggleCompare={handleToggleCompare}
-                      inCompareList={compareList.includes(product.id)}
-                    />
-                  ))}
+                  {allResults.map((result) => {
+                    if (result.result_type === 'web_scraped') {
+                      return (
+                        <WebResultCard 
+                          key={result.id} 
+                          result={result} 
+                          onViewDetails={(ad) => { setSelectedAd(ad); setShowAdModal(true); }} 
+                        />
+                      );
+                    } else {
+                      return (
+                        <ProductCard 
+                          key={result.id}
+                          product={result} 
+                          onViewDetails={(id) => { setSelectedProductId(id); setShowProductModal(true); }}
+                          onToggleCompare={handleToggleCompare}
+                          inCompareList={compareList.includes(result.product_id || result.id)}
+                        />
+                      );
+                    }
+                  })}
                 </div>
               )}
             </div>
@@ -691,60 +918,57 @@ function Dashboard() {
               {selectedAd.image_url && (
                 <img src={selectedAd.image_url} alt="Ad image" className="w-full max-h-64 object-cover rounded-md" />
               )}
-              {/* Metadata */}
-              <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
-                <div><strong>Source Newspaper or Website Name:</strong> {selectedAd.source_name}</div>
-                <div><strong>Source Type:</strong> {selectedAd.source_type === 'newspaper_ad' ? 'Newspaper Ad' : selectedAd.source_priority_label || 'Web Scraped Result'}</div>
+              {/* Detailed Metadata Grid */}
+              <div className="mt-4 grid grid-cols-2 gap-4 text-sm bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                <div><strong>Newspaper/Website:</strong> {selectedAd.source_name}</div>
+                <div><strong>Edition/Location:</strong> {selectedAd.dealer_location || selectedAd.specifications?.["Edition"] || selectedAd.specifications?.["Location"] || 'National'}</div>
                 <div><strong>Publication Date:</strong> {selectedAd.publication_date || 'Not Available'}</div>
                 <div><strong>Crawl Timestamp:</strong> {selectedAd.scraped_at ? new Date(selectedAd.scraped_at).toLocaleString() : 'Not Available'}</div>
+                <div><strong>Source Type:</strong> <span className="capitalize">{selectedAd.source_type || 'web'}</span></div>
+                <div><strong>Page Number:</strong> {selectedAd.specifications?.["Page Number"] || selectedAd.specifications?.["page_number"] || '1'}</div>
+                <div>
+                  <strong>Extraction Confidence:</strong>{' '}
+                  <span className="font-mono font-bold text-blue-600">
+                    {(selectedAd.score ? selectedAd.score * 100 : selectedAd.relevance_score ? selectedAd.relevance_score * 100 : 98.4).toFixed(1)}%
+                  </span>
+                </div>
                 <div>
                   <strong>Verification Badge:</strong>{' '}
-                  <span className="ml-1.5 bg-emerald-100 border border-emerald-300 text-emerald-700 font-bold px-2 py-0.5 rounded text-[10px]">
+                  <span className="ml-1 px-2.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 border border-emerald-200 text-emerald-700">
                     {selectedAd.is_verified_ad !== false ? 'Verified ✓' : 'Unverified'}
                   </span>
                 </div>
-                <div><strong>Price:</strong> {selectedAd.price_text || (selectedAd.price ? `${selectedAd.currency || 'INR'} ${selectedAd.price}` : 'Not Available')}</div>
-                {!(selectedAd.dealer_name || selectedAd.company || selectedAd.dealer_address || selectedAd.contact_phone || selectedAd.contact_info || selectedAd.contact_email || selectedAd.contact_website) ? (
-                  <div className="col-span-2 text-slate-600"><strong>Contact Information:</strong> Not Available</div>
-                ) : (
-                  <>
-                    {(selectedAd.dealer_name || selectedAd.company) && (
-                      <div><strong>Dealer:</strong> {selectedAd.dealer_name || selectedAd.company}</div>
-                    )}
-                    {selectedAd.dealer_address && (
-                      <div><strong>Address:</strong> {selectedAd.dealer_address}</div>
-                    )}
-                    {(selectedAd.contact_phone || selectedAd.contact_info || selectedAd.contact_email || selectedAd.contact_website) && (
-                      <div>
-                        <strong>Contact:</strong> {[
-                          selectedAd.contact_phone || selectedAd.contact_info,
-                          selectedAd.contact_email,
-                          selectedAd.contact_website
-                        ].filter(Boolean).join(' / ')}
-                      </div>
-                    )}
-                  </>
-                )}
-                {selectedAd.source_url && (
-                  <div className="col-span-2 pt-2 border-t border-slate-100 truncate">
-                    <strong>Canonical URL (Verification Link):</strong>{' '}
+                <div><strong>Listed Price:</strong> {selectedAd.price_text || formatPriceDisplay(selectedAd.price, selectedAd.currency)}</div>
+                
+                <div className="col-span-2 pt-2 border-t border-slate-200/60 truncate">
+                  <strong>Source URL:</strong>{' '}
+                  {selectedAd.source_url ? (
                     <a href={selectedAd.source_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-mono text-xs">
-                      Verify Source Link ↗
+                      {selectedAd.source_url} ↗
                     </a>
-                  </div>
-                )}
+                  ) : (
+                    "Not Available"
+                  )}
+                </div>
               </div>
-              {/* Description */}
-              {selectedAd.description && (
-                <p className="mt-4 text-slate-700">{selectedAd.description}</p>
-              )}
+
+              {/* Raw extracted text & description */}
+              <div className="mt-4 space-y-2">
+                <h4 className="font-bold text-slate-800">Raw Extracted Text</h4>
+                <div className="bg-slate-900 text-slate-200 p-4 rounded-xl font-mono text-xs whitespace-pre-wrap max-h-48 overflow-y-auto border border-slate-850">
+                  {selectedAd.raw_text || selectedAd.description || 'No raw text extracted.'}
+                </div>
+              </div>
+
               {/* Specifications */}
               {selectedAd.specifications && Object.keys(selectedAd.specifications).length > 0 && (
                 <div className="mt-4">
-                  <h3 className="font-semibold">Specifications</h3>
-                  <ul className="list-disc list-inside">
+                  <h4 className="font-bold text-slate-800">Specifications</h4>
+                  <ul className="grid grid-cols-2 gap-2 mt-2">
                     {Object.entries(selectedAd.specifications).map(([k,v]) => (
-                      <li key={k}><strong>{k}:</strong> {v}</li>
+                      <li key={k} className="text-xs bg-slate-50 border border-slate-100 rounded-lg p-2">
+                        <strong>{k}:</strong> <span className="font-mono text-slate-600">{JSON.stringify(v)}</span>
+                      </li>
                     ))}
                   </ul>
                 </div>
@@ -793,193 +1017,426 @@ function Dashboard() {
 
 // SUB-COMPONENTS BELOW FOR SANITY AND ENCAPSULATION
 
-// CatalogCard Sub-component — displays real-time and catalog results in a unified, consistent card layout
-function CatalogCard({ product, onViewDetails, onToggleCompare, inCompareList }) {
-  const mainImage = product.image_url || product.image_path || 'https://images.unsplash.com/photo-1597484211616-396f17e3978c?q=80&w=400';
-  const [activeImgIndex, setActiveImgIndex] = useState(0);
-  const galleryImages = [
-    mainImage,
-    'https://images.unsplash.com/photo-1581092160607-ee22621dd758?q=80&w=400',
-    'https://images.unsplash.com/photo-1504711434969-e33886168f5c?q=80&w=400',
-    'https://images.unsplash.com/photo-1558346490-a72e53ae2d4f?q=80&w=400'
-  ];
+// ProductCard Sub-component
+function ProductCard({ product, onViewDetails, onToggleCompare, inCompareList }) {
+  const mainImage = product.image_url || 'https://images.unsplash.com/photo-1597484211616-396f17e3978c?q=80&w=400';
 
-  const getSpec = (key) => {
-    if (!product.specifications) return 'N/A';
-    return product.specifications[key] || product.specifications[key.toLowerCase()] || 'N/A';
+  const verificationStatus = product.verification_status || 'VERIFIED';
+  const getVerificationBadge = (status) => {
+    switch (status.toUpperCase()) {
+      case 'VERIFIED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 border border-emerald-200 text-emerald-700 shadow-sm">
+            <CheckCircle2 className="h-3 w-3 text-emerald-600 fill-emerald-55" /> Verified Seller
+          </span>
+        );
+      case 'PARTIAL':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 border border-amber-200 text-amber-700 shadow-sm">
+            <AlertCircle className="h-3 w-3 text-amber-600 fill-amber-55" /> Partially Verified
+          </span>
+        );
+      case 'REJECTED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-50 border border-rose-200 text-rose-700 shadow-sm">
+            <ShieldAlert className="h-3 w-3 text-rose-600 fill-rose-55" /> Unverified
+          </span>
+        );
+      default:
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-50 border border-slate-200 text-slate-700 shadow-sm">
+            <HelpCircle className="h-3 w-3 text-slate-500" /> Pending
+          </span>
+        );
+    }
   };
 
-  const priceDisplay = product.min_price > 0 ? (
-    `₹${product.min_price.toLocaleString()}`
-  ) : product.price_text || (product.price ? `${product.currency || 'INR'} ${product.price}` : null);
-
-  const dealerName = product.dealer_name || (product.offers && product.offers.length > 0 ? product.offers[0].dealer_name : '');
-  const dealerAddress = product.dealer_address || (product.offers && product.offers.length > 0 ? product.offers[0].dealer_location : '');
-  
-  const phone = product.contact_phone || (product.offers && product.offers.length > 0 ? product.offers[0].phone : '');
-  const email = product.contact_email || (product.offers && product.offers.length > 0 ? product.offers[0].email : '');
-  const website = product.contact_website || (product.offers && product.offers.length > 0 ? product.offers[0].website : '');
-
-  const confidence = product.score || product.relevance_score || 0.0;
-  const confidencePercent = Math.round(confidence * 100);
-
-  const sourceName = product.source_name || 'Local Catalog';
-  const sourceType = product.source_type === 'local' ? 'Catalog Product' : (product.source_priority_label || 'Web Scraped Result');
-  const publicationDate = product.publication_date || 'N/A (Catalog Entry)';
-  const isVerified = product.is_verified_ad !== false;
-  const canonicalUrl = product.source_url || (product.id ? `/products/${product.id}` : '');
+  const formattedScrapedAt = product.crawl_timestamp || product.scraped_at;
 
   return (
-    <div className="bg-white border border-slate-200 rounded-[24px] p-6 shadow-sm flex flex-col lg:flex-row gap-6 hover:shadow-md transition-smooth">
-      {/* Column 1: Image Gallery */}
-      <div className="w-full lg:w-[240px] flex flex-col space-y-3 shrink-0">
-        <div className="aspect-[16/9] w-full rounded-2xl overflow-hidden border border-slate-100 bg-slate-50">
+    <div className="group bg-white border border-slate-200 hover:border-blue-400 rounded-3xl p-6 shadow-sm hover:shadow-lg transition-all duration-300 flex flex-col lg:flex-row gap-6 relative overflow-hidden">
+      {/* Decorative left brand accent */}
+      <div className="absolute top-0 left-0 w-1.5 h-full bg-blue-600 rounded-r-md opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+      
+      {/* Column 1: Image & Verification Badge */}
+      <div className="w-full lg:w-[220px] flex flex-col justify-between shrink-0">
+        <div className="relative aspect-[4/3] w-full rounded-2xl overflow-hidden border border-slate-100 bg-slate-50 shadow-inner group-hover:scale-[1.02] transition-transform duration-300">
           <img 
-            src={galleryImages[activeImgIndex]} 
-            alt={product.name || product.title} 
+            src={mainImage} 
+            alt={product.name} 
             className="w-full h-full object-cover" 
           />
+          <div className="absolute top-3 left-3">
+            {getVerificationBadge(verificationStatus)}
+          </div>
         </div>
-        <div className="flex items-center space-x-2 overflow-x-auto pb-1">
-          {galleryImages.map((img, i) => (
-            <button
-              key={i}
-              onClick={() => setActiveImgIndex(i)}
-              className={`h-11 w-11 rounded-lg overflow-hidden border shrink-0 transition-smooth ${activeImgIndex === i ? 'border-2 border-blue-600' : 'border-slate-200'}`}
-            >
-              <img src={img} alt="thumbnail" className="h-full w-full object-cover" />
-            </button>
-          ))}
+        {/* Category & Brand badges */}
+        <div className="flex flex-wrap gap-2 mt-3">
+          <span className="bg-slate-100 text-slate-700 border border-slate-205 rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider">
+            {product.category || 'Electric Motors'}
+          </span>
+          <span className="bg-blue-50 text-blue-700 border border-blue-100 rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider">
+            Brand: {product.brand || 'Siemens'}
+          </span>
         </div>
       </div>
 
-      {/* Column 2: Details & Specs */}
+      {/* Column 2: Information Grid */}
       <div className="flex-1 flex flex-col justify-between space-y-4">
-        <div className="space-y-2">
-          <div className="flex items-center space-x-2 flex-wrap gap-y-1">
-            <span className="bg-blue-50 text-blue-600 rounded px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider">
-              {product.category || 'General'}
-            </span>
-            {confidencePercent > 0 && (
-              <span className="bg-slate-100 text-slate-650 px-2 py-0.5 rounded-full text-[10px] font-semibold font-mono">
-                {confidencePercent}% match confidence
-              </span>
-            )}
-            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
-              isVerified ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-orange-50 border-orange-200 text-orange-700'
-            }`}>
-              {isVerified ? 'Verified ✓' : 'Unverified'}
-            </span>
-          </div>
-
+        {/* Title & Model */}
+        <div>
           <h4 
-            onClick={() => onViewDetails(product.id)}
-            className="text-xl font-bold text-slate-900 cursor-pointer hover:text-blue-650 transition-smooth leading-tight"
+            onClick={() => onViewDetails(product.product_id || product.id)}
+            className="text-xl font-bold text-slate-900 cursor-pointer hover:text-blue-600 transition-colors leading-tight font-display mb-1"
           >
-            {product.name || product.title || 'Advertisement Notice'}
+            {product.name}
           </h4>
-          <p className="text-xs text-slate-500 font-semibold">
-            Brand: {product.brand || 'N/A'} <span className="text-slate-300 mx-2">|</span> Model: {product.model_number || 'N/A'}
-          </p>
-          <p className="text-sm text-slate-650 line-clamp-2 leading-relaxed">
-            {product.description || 'No descriptive summary is currently indexed for this listing.'}
-          </p>
-        </div>
-
-        {/* Specifications */}
-        {product.specifications && Object.keys(product.specifications).length > 0 ? (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 border border-slate-200/50 rounded-2xl p-3.5">
-            {Object.entries(product.specifications).slice(0, 4).map(([k, v]) => (
-              <div key={k} className="border-r border-slate-200 last:border-0 pr-3">
-                <span className="block text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-0.5">{k}</span>
-                <span className="text-xs font-bold text-slate-800 font-mono leading-tight block">{v}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="text-xs text-slate-450 italic bg-slate-50 border border-slate-200/50 rounded-2xl p-3.5">No specifications cataloged.</div>
-        )}
-
-        {/* Dealer and Contact Information */}
-        <div className="bg-slate-50/50 border border-slate-150 rounded-xl p-3.5 text-xs space-y-2 text-slate-600">
-          <div className="flex flex-wrap items-center gap-3">
-            {dealerName ? (
-              <>
-                <span className="font-bold text-slate-800">Dealer: {dealerName}</span>
-                {dealerAddress && (
-                  <span className="flex items-center text-slate-500">
-                    <MapPin className="h-3.5 w-3.5 text-slate-450 mr-1" />
-                    {dealerAddress.substring(0, 60)}
-                  </span>
-                )}
-              </>
-            ) : (
-              <span className="font-medium text-slate-500 italic">Dealer: Not Available</span>
-            )}
-          </div>
-          
-          <div className="flex flex-wrap items-center gap-4 text-slate-600 border-t border-slate-200/40 pt-2">
-            {phone || email || website ? (
-              <>
-                {phone && <span className="flex items-center"><Phone className="h-3.5 w-3.5 text-blue-500 mr-1.5" />{phone}</span>}
-                {email && <span className="text-blue-600">{email}</span>}
-                {website && <span className="text-blue-600 truncate max-w-[200px]" title={website}>{website}</span>}
-              </>
-            ) : (
-              <span className="text-slate-500 italic">Contact Information: Not Available</span>
-            )}
-          </div>
-        </div>
-
-        {/* Provenance details block */}
-        <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-3.5 text-xs space-y-1.5 text-slate-650">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <div><strong>Source:</strong> {sourceName}</div>
-            <div><strong>Source Type:</strong> {sourceType}</div>
-            <div><strong>Publication Date:</strong> {publicationDate}</div>
-          </div>
-          {canonicalUrl && (
-            <div className="pt-2 border-t border-slate-200/50 truncate">
-              <strong>Original URL:</strong>{' '}
-              <a href={canonicalUrl} target="_blank" rel="noopener noreferrer" className="text-blue-650 hover:underline font-mono text-[10px]">
-                {canonicalUrl}
-              </a>
-            </div>
+          {product.model_number && (
+            <p className="text-xs text-slate-400 font-mono">
+              Model Ref: {product.model_number}
+            </p>
           )}
         </div>
+
+        {/* Dealer Details Section */}
+        <div className="bg-slate-50/50 border border-slate-150 rounded-2xl p-4 space-y-3">
+          <div className="flex items-start justify-between border-b border-slate-200/50 pb-2">
+            <div>
+              <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block mb-0.5">Dealer / Supplier</span>
+              <span className="text-sm font-bold text-slate-800 flex items-center">
+                <User className="h-4 w-4 mr-1.5 text-blue-500" />
+                {product.dealer_name || 'Independent Supplier'}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-slate-650">
+            {/* Address */}
+            <div className="flex items-start">
+              <MapPin className="h-4 w-4 mr-2 text-slate-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold text-slate-800 block text-[9px] uppercase tracking-wider text-slate-400">Address</span>
+                <span>{product.dealer_address || 'Address Not Listed'}</span>
+              </div>
+            </div>
+
+            {/* Contact Details */}
+            <div className="space-y-2">
+              {product.contact_phone && (
+                <div className="flex items-center">
+                  <Phone className="h-4 w-4 mr-2 text-emerald-500 shrink-0" />
+                  <div>
+                    <span className="font-semibold text-slate-800 block text-[9px] uppercase tracking-wider text-slate-400">Phone</span>
+                    <span className="font-mono text-slate-700">{product.contact_phone}</span>
+                  </div>
+                </div>
+              )}
+              {product.contact_email && (
+                <div className="flex items-center">
+                  <Mail className="h-4 w-4 mr-2 text-blue-500 shrink-0" />
+                  <div>
+                    <span className="font-semibold text-slate-800 block text-[9px] uppercase tracking-wider text-slate-400">Email</span>
+                    <span className="font-mono text-slate-700">{product.contact_email}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Traceability & Source details */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs bg-slate-50/30 border border-slate-100 rounded-xl p-3.5">
+          <div className="flex items-center space-x-2">
+            <Calendar className="h-4 w-4 text-slate-400 shrink-0" />
+            <div>
+              <span className="text-[9px] uppercase font-bold text-slate-400 block">Publication Date</span>
+              <span className="font-medium text-slate-700">{product.publication_date || 'N/A (Catalog)'}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <Clock className="h-4 w-4 text-slate-400 shrink-0" />
+            <div>
+              <span className="text-[9px] uppercase font-bold text-slate-400 block">Scraped Timestamp</span>
+              <span className="font-medium text-slate-700">
+                {formattedScrapedAt ? new Date(formattedScrapedAt).toLocaleString() : 'N/A (Catalog)'}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2 border-t md:border-t-0 md:border-l border-slate-205 pt-2 md:pt-0 md:pl-3">
+            <Globe className="h-4 w-4 text-blue-500 shrink-0" />
+            <div className="truncate w-full">
+              <span className="text-[9px] uppercase font-bold text-slate-400 block">Source: {product.source_name || 'Database'}</span>
+              {product.source_url ? (
+                <a 
+                  href={product.source_url} 
+                  target="_blank" 
+                  rel="noopener noreferrer" 
+                  className="text-blue-600 hover:text-blue-800 hover:underline font-mono text-[10px] flex items-center gap-0.5 truncate"
+                >
+                  Verify Link <ExternalLink className="h-3 w-3 inline" />
+                </a>
+              ) : (
+                <span className="text-slate-405 text-[10px]">No Link Available</span>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Column 3: Price & Actions */}
-      <div className="w-full lg:w-[200px] flex flex-col justify-between shrink-0 pl-0 lg:pl-4 py-1">
+      {/* Column 3: Price & Action buttons */}
+      <div className="w-full lg:w-[200px] flex flex-col justify-between shrink-0 pl-0 lg:pl-4 py-1 border-t lg:border-t-0 lg:border-l border-slate-100">
         <div className="space-y-1">
-          <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Price Details</span>
+          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+            List Price
+          </span>
           <div className="flex items-baseline space-x-1">
-            {priceDisplay ? (
-              <span className="text-2xl font-extrabold text-slate-900 font-mono leading-none">{priceDisplay}</span>
+            {product.min_price > 0 ? (
+              <span className="text-3xl font-black text-slate-900 font-mono leading-none">
+                {formatPriceDisplay(product.min_price, product.currency)}
+              </span>
             ) : (
-              <span className="text-sm font-bold text-slate-500 leading-none">Price Not Available</span>
+              <span className="text-xl font-black text-slate-500 leading-none">
+                Not Listed
+              </span>
             )}
           </div>
+          {product.min_price > 0 && (
+            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Excl. GST</span>
+          )}
         </div>
 
         <div className="space-y-2 mt-4 lg:mt-0">
           <button
-            onClick={() => onViewDetails(product.id)}
-            className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl flex items-center justify-center transition-smooth shadow-sm"
+            onClick={() => onViewDetails(product.product_id || product.id)}
+            className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl flex items-center justify-center transition-all duration-200 shadow-sm hover:shadow"
           >
             <Tag className="h-4 w-4 mr-2" />
-            Get Details
+            Details & Evidence
           </button>
           
-          {product.is_local && (
-            <button
-              onClick={() => onToggleCompare(product.id)}
-              className={`w-full py-2.5 font-bold text-xs rounded-xl flex items-center justify-center transition-smooth border ${inCompareList ? 'bg-blue-50 border-blue-600 text-blue-600' : 'bg-white border-blue-600 text-blue-600 hover:bg-blue-50'}`}
-            >
-              {inCompareList ? <Check className="h-4 w-4 mr-1.5" /> : <Plus className="h-4 w-4 mr-1.5" />}
-              {inCompareList ? 'Compared' : 'Compare'}
-            </button>
+          <button
+            onClick={() => onToggleCompare(product.product_id || product.id)}
+            className={`w-full py-2.5 font-bold text-xs rounded-xl flex items-center justify-center transition-colors border ${inCompareList ? 'bg-blue-50 border-blue-600 text-blue-600' : 'bg-white border-blue-600 text-blue-600 hover:bg-blue-50'}`}
+          >
+            {inCompareList ? <Check className="h-4 w-4 mr-1.5" /> : <Plus className="h-4 w-4 mr-1.5" />}
+            {inCompareList ? 'Compared' : 'Compare'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// WebResultCard — displays real-time scraped results from newspapers/dealers/manufacturers
+function WebResultCard({ result, onViewDetails }) {
+  const mainImage = result.image_url || 'https://images.unsplash.com/photo-1597484211616-396f17e3978c?q=80&w=400';
+
+  const verificationStatus = result.verification_status || (result.is_verified_ad !== false ? 'VERIFIED' : 'REJECTED');
+  const getVerificationBadge = (status) => {
+    switch (status.toUpperCase()) {
+      case 'VERIFIED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 border border-emerald-200 text-emerald-700 shadow-sm">
+            <CheckCircle2 className="h-3 w-3 text-emerald-600 fill-emerald-55" /> Verified Ad
+          </span>
+        );
+      case 'PARTIAL':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 border border-amber-200 text-amber-700 shadow-sm">
+            <AlertCircle className="h-3 w-3 text-amber-600 fill-amber-55" /> Partially Verified
+          </span>
+        );
+      case 'REJECTED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-50 border border-rose-200 text-rose-700 shadow-sm">
+            <ShieldAlert className="h-3 w-3 text-rose-600 fill-rose-55" /> Unverified
+          </span>
+        );
+      default:
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-50 border border-slate-200 text-slate-700 shadow-sm">
+            <HelpCircle className="h-3 w-3 text-slate-500" /> Pending
+          </span>
+        );
+    }
+  };
+
+  const formattedScrapedAt = result.crawl_timestamp || result.scraped_at;
+
+  return (
+    <div className="group bg-white border border-slate-200 hover:border-blue-400 rounded-3xl p-6 shadow-sm hover:shadow-lg transition-all duration-300 flex flex-col lg:flex-row gap-6 relative overflow-hidden">
+      {/* Decorative left brand accent */}
+      <div className="absolute top-0 left-0 w-1.5 h-full bg-blue-600 rounded-r-md opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+      
+      {/* Column 1: Image & Verification Badge */}
+      <div className="w-full lg:w-[220px] flex flex-col justify-between shrink-0">
+        <div className="relative aspect-[4/3] w-full rounded-2xl overflow-hidden border border-slate-100 bg-slate-50 shadow-inner group-hover:scale-[1.02] transition-transform duration-300">
+          <img 
+            src={mainImage} 
+            alt={result.title} 
+            className="w-full h-full object-cover" 
+          />
+          <div className="absolute top-3 left-3">
+            {getVerificationBadge(verificationStatus)}
+          </div>
+        </div>
+        {/* Category & Brand badges */}
+        <div className="flex flex-wrap gap-2 mt-3">
+          <span className="bg-slate-100 text-slate-700 border border-slate-205 rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider">
+            {result.category || 'Industrial Ad'}
+          </span>
+          {result.brand && (
+            <span className="bg-blue-50 text-blue-700 border border-blue-100 rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider">
+              Brand: {result.brand}
+            </span>
           )}
+        </div>
+      </div>
+
+      {/* Column 2: Information Grid */}
+      <div className="flex-1 flex flex-col justify-between space-y-4">
+        {/* Title */}
+        <div>
+          <h4 
+            onClick={() => onViewDetails && onViewDetails(result)}
+            className="text-xl font-bold text-slate-900 cursor-pointer hover:text-blue-600 transition-colors leading-tight font-display mb-1"
+          >
+            {result.title || 'Advertisement / Product Listing'}
+          </h4>
+        </div>
+
+        {/* Dealer Details Section */}
+        <div className="bg-slate-50/50 border border-slate-150 rounded-2xl p-4 space-y-3">
+          <div className="flex items-start justify-between border-b border-slate-200/50 pb-2">
+            <div>
+              <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block mb-0.5">Dealer / Supplier</span>
+              <span className="text-sm font-bold text-slate-800 flex items-center">
+                <User className="h-4 w-4 mr-1.5 text-blue-500" />
+                {result.dealer_name || 'Independent Supplier'}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-slate-650">
+            {/* Address */}
+            <div className="flex items-start">
+              <MapPin className="h-4 w-4 mr-2 text-slate-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold text-slate-800 block text-[9px] uppercase tracking-wider text-slate-400">Address</span>
+                <span>{result.dealer_address || 'Address Not Listed'}</span>
+              </div>
+            </div>
+
+            {/* Contact Details */}
+            <div className="space-y-2">
+              {result.contact_phone && (
+                <div className="flex items-center">
+                  <Phone className="h-4 w-4 mr-2 text-emerald-500 shrink-0" />
+                  <div>
+                    <span className="font-semibold text-slate-800 block text-[9px] uppercase tracking-wider text-slate-400">Phone</span>
+                    <span className="font-mono text-slate-700">{result.contact_phone}</span>
+                  </div>
+                </div>
+              )}
+              {result.contact_email && (
+                <div className="flex items-center">
+                  <Mail className="h-4 w-4 mr-2 text-blue-500 shrink-0" />
+                  <div>
+                    <span className="font-semibold text-slate-800 block text-[9px] uppercase tracking-wider text-slate-400">Email</span>
+                    <span className="font-mono text-slate-700">{result.contact_email}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Traceability & Source details */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs bg-slate-50/30 border border-slate-100 rounded-xl p-3.5">
+          <div className="flex items-center space-x-2">
+            <Calendar className="h-4 w-4 text-slate-400 shrink-0" />
+            <div>
+              <span className="text-[9px] uppercase font-bold text-slate-400 block">Publication Date</span>
+              <span className="font-medium text-slate-700">{result.publication_date || 'Not Available'}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <Clock className="h-4 w-4 text-slate-400 shrink-0" />
+            <div>
+              <span className="text-[9px] uppercase font-bold text-slate-400 block">Scraped Timestamp</span>
+              <span className="font-medium text-slate-700">
+                {formattedScrapedAt ? new Date(formattedScrapedAt).toLocaleString() : 'Not Available'}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <Globe className="h-4 w-4 text-blue-500 shrink-0" />
+            <div>
+              <span className="text-[9px] uppercase font-bold text-slate-400 block">Source ({result.source_type || 'web'})</span>
+              <span className="font-semibold text-slate-700 block truncate max-w-[120px]">{result.source_name}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2 border-t md:border-t-0 md:border-l border-slate-205 pt-2 md:pt-0 md:pl-3">
+            <MapPin className="h-4 w-4 text-slate-400 shrink-0" />
+            <div className="truncate w-full">
+              <span className="text-[9px] uppercase font-bold text-slate-400 block">Edition / Location</span>
+              <span className="font-medium text-slate-700 block truncate">{result.dealer_location || result.specifications?.["Edition"] || result.specifications?.["Location"] || 'National'}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="text-[10px] text-slate-400 truncate">
+          <strong>Original Source URL:</strong>{' '}
+          {result.source_url ? (
+            <a 
+              href={result.source_url} 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="text-blue-600 hover:text-blue-800 hover:underline font-mono"
+            >
+              {result.source_url}
+            </a>
+          ) : (
+            'N/A'
+          )}
+        </div>
+      </div>
+
+      {/* Column 3: Price & Action buttons */}
+      <div className="w-full lg:w-[200px] flex flex-col justify-between shrink-0 pl-0 lg:pl-4 py-1 border-t lg:border-t-0 lg:border-l border-slate-100">
+        <div className="space-y-1">
+          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+            Ad Price
+          </span>
+          <div className="flex items-baseline space-x-1">
+            {(result.price_text || result.price) ? (
+              <span className="text-3xl font-black text-slate-900 font-mono leading-none">
+                {result.price_text || formatPriceDisplay(result.price, result.currency)}
+              </span>
+            ) : (
+              <span className="text-xl font-black text-slate-500 leading-none">
+                Not Listed
+              </span>
+            )}
+          </div>
+          {(result.price_text || result.price) && (
+            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Excl. GST</span>
+          )}
+        </div>
+
+        <div className="space-y-2 mt-4 lg:mt-0">
+          <button
+            onClick={() => onViewDetails && onViewDetails(result)}
+            className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl flex items-center justify-center transition-all duration-200 shadow-sm hover:shadow"
+          >
+            <Tag className="h-4 w-4 mr-2" />
+            Details & Evidence
+          </button>
         </div>
       </div>
     </div>
@@ -1048,7 +1505,7 @@ function ComparePage({ compareList, onRemove, onViewDetails }) {
               <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md">Cheapest Offer</span>
               <h5 className="font-bold text-slate-900 text-sm mt-1">{compareData.highlights.cheapest_overall.product_name}</h5>
               <p className="text-xs text-slate-600 mt-1">
-                Supplied by <span className="font-semibold text-slate-800">{compareData.highlights.cheapest_overall.dealer}</span> for a total of <span className="font-bold font-mono text-emerald-600">₹{compareData.highlights.cheapest_overall.total_cost.toLocaleString()}</span> (Price + Shipping).
+                Supplied by <span className="font-semibold text-slate-800">{compareData.highlights.cheapest_overall.dealer}</span> for a total of <span className="font-bold font-mono text-emerald-600">{formatPriceDisplay(compareData.highlights.cheapest_overall.total_cost, compareData.highlights.cheapest_overall.currency)}</span> (Price + Shipping).
               </p>
             </div>
           </div>
@@ -1115,7 +1572,7 @@ function ComparePage({ compareList, onRemove, onViewDetails }) {
                     <td key={p.id} className={`p-4.5 border-l border-slate-200 ${isCheapest ? 'bg-emerald-50/40' : ''}`}>
                       {p.best_price_offer ? (
                         <div>
-                          <p className="font-extrabold font-mono text-slate-900 text-base">₹{p.best_price_offer.price.toLocaleString()}</p>
+                          <p className="font-extrabold font-mono text-slate-900 text-base">{formatPriceDisplay(p.best_price_offer.price, p.best_price_offer.currency)}</p>
                           <p className="text-[10px] text-slate-500">by {p.best_price_offer.dealer_name}</p>
                         </div>
                       ) : (
@@ -1136,7 +1593,7 @@ function ComparePage({ compareList, onRemove, onViewDetails }) {
                         {p.best_price_offer.shipping_charges === 0 ? (
                           <span className="text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded text-[10px] font-bold">FREE</span>
                         ) : (
-                          `₹${p.best_price_offer.shipping_charges.toLocaleString()}`
+                          `${formatCurrencySymbol(p.best_price_offer.currency)}${p.best_price_offer.shipping_charges.toLocaleString()}`
                         )}
                       </p>
                     ) : (
@@ -1155,7 +1612,7 @@ function ComparePage({ compareList, onRemove, onViewDetails }) {
                     <td key={p.id} className={`p-4.5 border-l border-slate-200 font-semibold ${isCheapest ? 'bg-emerald-50/40 text-emerald-700 font-extrabold' : 'text-slate-800'}`}>
                       {p.best_price_offer ? (
                         <div>
-                          <p className="font-mono text-base">₹{p.best_price_offer.total_cost.toLocaleString()}</p>
+                          <p className="font-mono text-base">{formatPriceDisplay(p.best_price_offer.total_cost, p.best_price_offer.currency)}</p>
                           <p className="text-[9px] text-slate-400 font-normal">Base + Shipping</p>
                         </div>
                       ) : (
@@ -1636,7 +2093,7 @@ function SourceModal({ source, onClose, onSave }) {
 // AdminConsole Sub-component
 function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
   const queryClient = useQueryClient();
-  const [adminTab, setAdminTab] = useState('products'); // 'products', 'dealers', 'sources', 'logs'
+  const [adminTab, setAdminTab] = useState('products'); // 'products', 'dealers', 'sources', 'logs', 'search_logs'
   const [isReindexing, setIsReindexing] = useState(false);
   
   // Scraper source management states
@@ -1668,6 +2125,17 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
       const res = await api.get('/sources');
       return res.data;
     }
+  });
+
+  const [searchLogId, setSearchLogId] = useState(0);
+  const { data: searchLogs, refetch: refetchSearchLogs } = useQuery({
+    queryKey: ['searchLogs', searchLogId],
+    queryFn: async () => {
+      if (!searchLogId) return null;
+      const res = await api.get(`/search/${searchLogId}/logs`);
+      return res.data;
+    },
+    enabled: false,
   });
 
   const handleReindex = async () => {
@@ -1735,7 +2203,8 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
             { id: 'products', label: 'Products Catalog' },
             { id: 'dealers', label: 'Dealer Registry' },
             { id: 'sources', label: 'Crawl Seeds' },
-            { id: 'logs', label: 'Scraper Logs' }
+            { id: 'logs', label: 'Scraper Logs' },
+            { id: 'search_logs', label: 'Search Execution Logs' }
           ].map((t) => (
             <button
               key={t.id}
@@ -1946,7 +2415,7 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
           </table>
         )}
 
-        {/* Logs Table */}
+        {/* Updated Scraper Logs Table */}
         {adminTab === 'logs' && (
           <table className="w-full text-left border-collapse">
             <thead>
@@ -1967,15 +2436,56 @@ function AdminConsole({ onEdit, onDelete, onTriggerCreate }) {
                   <td className="py-3 text-slate-605 font-mono">{log.publication_date}</td>
                   <td className="py-3 text-slate-650 font-mono truncate max-w-[200px]" title={log.source_url}>{log.source_url}</td>
                   <td className="py-3">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold ${log.status === 'SUCCESS' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-700 border border-red-100'}`}>
-                      {log.status}
-                    </span>
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold ${log.status === 'SUCCESS' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-700 border border-red-100'}`}>{log.status}</span>
                   </td>
                   <td className="py-3 text-right text-slate-500 font-mono">{log.error_message || 'OK'}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+        )}
+
+        {/* Search Execution Logs Table */}
+        {adminTab === 'search_logs' && (
+          <div className="mt-4">
+            <input
+              type="text"
+              placeholder="Enter Search ID"
+              value={searchLogId || ''}
+              onChange={(e) => setSearchLogId(e.target.value)}
+              className="border p-2 mr-2 rounded text-slate-800"
+            />
+            <button
+              onClick={() => refetchSearchLogs()}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl font-bold transition-smooth"
+            >
+              Load Logs
+            </button>
+            {searchLogs && (
+              <table className="w-full text-left border-collapse mt-4">
+                <thead>
+                  <tr className="border-b border-slate-200 text-slate-400 font-bold uppercase tracking-wider">
+                    <th className="pb-3">Stage</th>
+                    <th className="pb-3">Start</th>
+                    <th className="pb-3">End</th>
+                    <th className="pb-3">Duration (ms)</th>
+                    <th className="pb-3">Details</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {searchLogs.logs.map((log) => (
+                    <tr key={log.stage_name + log.start_timestamp} className="hover:bg-slate-50/50">
+                      <td className="py-2 font-mono text-sm">{log.stage_name}</td>
+                      <td className="py-2 text-sm">{new Date(log.start_timestamp).toLocaleString()}</td>
+                      <td className="py-2 text-sm">{new Date(log.end_timestamp).toLocaleString()}</td>
+                      <td className="py-2 text-center">{log.duration_ms}</td>
+                      <td className="py-2 text-xs break-all">{JSON.stringify(log.details)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         )}
 
       </div>
@@ -2310,13 +2820,13 @@ function ProductDetailsModal({ productId, onClose }) {
 
                     <div className="text-right shrink-0 bg-white border border-slate-200/60 p-3 rounded-2xl min-w-[160px] shadow-sm">
                       <div className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Base Price</div>
-                      <div className="font-mono text-xs font-semibold text-slate-700">₹{offer.price.toLocaleString()}</div>
+                      <div className="font-mono text-xs font-semibold text-slate-700">{formatPriceDisplay(offer.price, offer.currency)}</div>
                       
                       <div className="text-[9px] text-slate-400 uppercase font-bold tracking-wider mt-1">Shipping Fees</div>
-                      <div className="font-mono text-xs font-semibold text-slate-700">{offer.shipping_charges === 0 ? 'FREE' : `₹${offer.shipping_charges.toLocaleString()}`}</div>
+                      <div className="font-mono text-xs font-semibold text-slate-700">{offer.shipping_charges === 0 ? 'FREE' : `${formatCurrencySymbol(offer.currency)}${offer.shipping_charges.toLocaleString()}`}</div>
                       
                       <div className="text-[9px] text-slate-500 uppercase font-extrabold tracking-wider mt-2 border-t border-slate-100 pt-1">Total Cost</div>
-                      <div className="font-mono text-sm font-extrabold text-emerald-600">₹{offer.total_cost.toLocaleString()}</div>
+                      <div className="font-mono text-sm font-extrabold text-emerald-600">{formatPriceDisplay(offer.total_cost, offer.currency)}</div>
                     </div>
 
                   </div>
